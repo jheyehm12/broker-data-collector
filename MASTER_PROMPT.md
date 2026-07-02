@@ -60,6 +60,7 @@ Completed candles only in both formats.
 6. **Historical backfill** — on `OnInit`, optionally write up to `BackfillBars` closed candles per symbol into the correct daily CSV files, then continue timer collection.
 7. **Quality summary** — after each symbol backfill, log bars/timestamp/spread stats and append a row to `summary_YYYYMMDD.csv`.
 8. **Filename sanitization** — `SanitizeSymbolForFilename()` for CSV/manifest paths only; keep raw broker symbol for `SymbolSelect`, `CopyRates`, and Raw CSV `symbol` column.
+9. **Loop symbol only** — never use `_Symbol` or `Symbol()`; all collection uses `g_symbols[]` from `InpSymbols` with pipeline logging.
 
 ## Design principles (v1)
 

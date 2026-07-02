@@ -1,8 +1,8 @@
 # PROJECT_STATE
 
 **Project:** Broker Data Collector  
-**Version:** 1.5.2  
-**Status:** Multi-timeframe + manifest + filename sanitization  
+**Version:** 1.5.5  
+**Status:** Startup symbol validation + batched backfill writes  
 **Last updated:** 2026-06-08
 
 ## What exists

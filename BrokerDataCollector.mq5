@@ -4,7 +4,7 @@
 //|                     Research / backtesting only — does NOT trade |
 //+------------------------------------------------------------------+
 #property copyright "Broker Data Collector"
-#property version   "1.52"
+#property version   "1.56"
 #property description "Collects broker-specific market data to CSV. No trading."
 
 #define OUTPUT_FOLDER           "BrokerDataCollector"
@@ -48,8 +48,22 @@ struct BackfillStats
    int      max_spread;
   };
 
+//--- per-symbol startup diagnostic (one row per configured input symbol)
+struct SymbolStartupDiagnostic
+  {
+   string configured;
+   string resolved;
+   bool   exists;
+   bool   selected;
+   bool   copy_rates_ok;
+   int    copy_rates_bars;
+   string copy_rates_reason;
+   bool   csv_written;
+   int    rows_written;
+  };
+
 //--- inputs
-input string            InpSymbols       = "BTCUSD,XAUUSD,US100,EURUSD";
+input string            InpSymbols       = "BTCUSD#,GOLD#,US100Cash#,EURUSD#";
 input string            InpTimeframes     = "M1,M5,M15,H1";
 input int               InpTimerSeconds  = 60;
 input bool              EnableBackfill   = true;
@@ -58,6 +72,9 @@ input ENUM_EXPORT_FORMAT ExportFormat    = EXPORT_RAW;
 
 //--- globals
 string          g_symbols[];
+string          g_skipped_symbols[];
+string          g_configured_symbols[];
+SymbolStartupDiagnostic g_symbol_diagnostics[];
 ENUM_TIMEFRAMES g_timeframes[];
 datetime        g_lastWrittenBarTime[];
 string          g_openFilePaths[];
@@ -232,6 +249,638 @@ void CloseTrackedFile(const string filePath, const int handle)
   }
 
 //+------------------------------------------------------------------+
+//| Log configured symbols after parsing (never uses _Symbol)        |
+//+------------------------------------------------------------------+
+void LogConfiguredSymbols(const string context)
+  {
+   int count = ArraySize(g_symbols);
+   Print("BrokerDataCollector: configured symbol count=", count, " context=", context);
+   for(int i = 0; i < count; i++)
+      Print("BrokerDataCollector: configured symbol[", i, "]=<", g_symbols[i], ">");
+  }
+
+//+------------------------------------------------------------------+
+//| Select loop symbol for data APIs — never uses _Symbol or Symbol()  |
+//+------------------------------------------------------------------+
+bool PrepareSymbolForData(const string loopSymbol, const string context)
+  {
+   Print("BrokerDataCollector: Processing symbol=<", loopSymbol, "> context=", context);
+
+   if(SymbolInfoInteger(loopSymbol, SYMBOL_EXIST) == 0)
+     {
+      Print("BrokerDataCollector: symbol=<", loopSymbol,
+            "> does not exist on this broker (context=", context, ")");
+      return false;
+     }
+
+   ResetLastError();
+   if(!SymbolSelect(loopSymbol, true))
+     {
+      Print("BrokerDataCollector: SymbolSelect failed for symbol=<", loopSymbol,
+            "> error=", GetLastError(), " context=", context);
+      return false;
+     }
+
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| CopyRates for explicit loop symbol — never uses chart symbol       |
+//+------------------------------------------------------------------+
+int CopyRatesForLoopSymbol(const string loopSymbol,
+                           const ENUM_TIMEFRAMES tf,
+                           const int startPos,
+                           const int count,
+                           MqlRates &rates[],
+                           const string context)
+  {
+   Print("BrokerDataCollector: CopyRates symbol=<", loopSymbol, "> tf=", TimeframeLabel(tf),
+         " start=", startPos, " requested=", count, " context=", context);
+
+   ResetLastError();
+   int copied = CopyRates(loopSymbol, tf, startPos, count, rates);
+   int err      = GetLastError();
+
+   Print("BrokerDataCollector: CopyRates symbol=<", loopSymbol, "> tf=", TimeframeLabel(tf),
+         " returned=", copied, " error=", err, " context=", context);
+
+   if(copied < 1)
+     {
+      Print("BrokerDataCollector: CopyRates failed symbol=<", loopSymbol, "> tf=", TimeframeLabel(tf),
+            " — ", ExplainCopyRatesFailure(loopSymbol, tf, count, err),
+            " context=", context);
+     }
+
+   return copied;
+  }
+
+//+------------------------------------------------------------------+
+//| Uppercase helper for symbol matching                             |
+//+------------------------------------------------------------------+
+string UpperSymbolKey(const string value)
+  {
+   string key = value;
+   StringToUpper(key);
+   return key;
+  }
+
+//+------------------------------------------------------------------+
+//| True when broker symbol exists (SymbolExist / SYMBOL_EXIST)      |
+//+------------------------------------------------------------------+
+bool BrokerSymbolExists(const string symbol)
+  {
+   bool isCustom = false;
+   if(SymbolExist(symbol, isCustom))
+      return true;
+
+   return (SymbolInfoInteger(symbol, SYMBOL_EXIST) != 0);
+  }
+
+//+------------------------------------------------------------------+
+//| Explain why CopyRates returned zero bars                         |
+//+------------------------------------------------------------------+
+string ExplainCopyRatesFailure(const string symbol,
+                               const ENUM_TIMEFRAMES tf,
+                               const int requested,
+                               const int err)
+  {
+   int available = Bars(symbol, tf);
+
+   if(available < 2)
+      return "Symbol history not synchronized (Bars=" + IntegerToString(available) + ")";
+
+   if(err == 4305)
+      return "Unknown symbol (error 4305)";
+
+   if(err == 4066)
+      return "Requested history not found (error 4066)";
+
+   if(err == 0)
+      return "CopyRates returned 0 bars (requested " + IntegerToString(requested) +
+             ", available " + IntegerToString(available) + ")";
+
+   return "CopyRates failed (error " + IntegerToString(err) +
+          ", requested " + IntegerToString(requested) +
+          ", available " + IntegerToString(available) + ")";
+  }
+
+//+------------------------------------------------------------------+
+//| True when symbol exists and can be selected in Market Watch      |
+//+------------------------------------------------------------------+
+bool IsCollectibleBrokerSymbol(const string symbol)
+  {
+   if(!BrokerSymbolExists(symbol))
+      return false;
+
+   ResetLastError();
+   if(!SymbolSelect(symbol, true))
+      return false;
+
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| Score how closely a broker symbol matches a configured name      |
+//+------------------------------------------------------------------+
+int SymbolSimilarityScore(const string configured, const string candidate)
+  {
+   if(configured == candidate)
+      return 0;
+
+   string cfg  = UpperSymbolKey(configured);
+   string cand = UpperSymbolKey(candidate);
+
+   if(cfg == cand)
+      return 100;
+
+   if(StringFind(cand, cfg) == 0)
+      return 90 - (StringLen(cand) - StringLen(cfg));
+
+   if(StringFind(cfg, cand) == 0)
+      return 85;
+
+   if(cfg == "XAUUSD" && (cand == "GOLD#" || cand == "GOLD"))
+      return 95;
+   if(cfg == "XAUUSD" && StringFind(cand, "GOLD") >= 0)
+      return 80;
+   if(cfg == "GOLD" && StringFind(cand, "XAU") >= 0)
+      return 80;
+
+   if((cfg == "US100" || cfg == "NAS100" || cfg == "USTEC") &&
+      (StringFind(cand, "US100") == 0 || StringFind(cand, "NAS100") == 0 ||
+       StringFind(cand, "USTEC") == 0))
+      return 75;
+
+   if(cfg == "BTCUSD" && StringFind(cand, "BTCUSD") == 0)
+      return 70;
+
+   if(StringLen(cfg) >= 3 && StringFind(cand, cfg) >= 0)
+      return 50;
+
+   return 0;
+  }
+
+//+------------------------------------------------------------------+
+//| Add unique suggestion if not already listed                      |
+//+------------------------------------------------------------------+
+void AddUniqueSuggestion(string &suggestions[], const string candidate)
+  {
+   for(int i = 0; i < ArraySize(suggestions); i++)
+     {
+      if(suggestions[i] == candidate)
+         return;
+     }
+
+   int n = ArraySize(suggestions);
+   ArrayResize(suggestions, n + 1);
+   suggestions[n] = candidate;
+  }
+
+//+------------------------------------------------------------------+
+//| Search all terminal symbols for names similar to configured      |
+//+------------------------------------------------------------------+
+void CollectSimilarSymbolSuggestions(const string configured, string &suggestions[])
+  {
+   ArrayResize(suggestions, 0);
+
+   string scoredNames[];
+   int    scores[];
+   int total = SymbolsTotal(false);
+
+   for(int i = 0; i < total; i++)
+     {
+      string candidate = SymbolName(i, false);
+      if(candidate == configured)
+         continue;
+
+      int score = SymbolSimilarityScore(configured, candidate);
+      if(score <= 0)
+         continue;
+
+      int n = ArraySize(scoredNames);
+      ArrayResize(scoredNames, n + 1);
+      ArrayResize(scores, n + 1);
+      scoredNames[n] = candidate;
+      scores[n]      = score;
+     }
+
+   // Simple descending sort by score (small lists only)
+   int count = ArraySize(scoredNames);
+   for(int a = 0; a < count - 1; a++)
+     {
+      for(int b = a + 1; b < count; b++)
+        {
+         if(scores[b] <= scores[a])
+            continue;
+
+         int    tmpScore = scores[a];
+         string tmpName  = scoredNames[a];
+         scores[a]      = scores[b];
+         scoredNames[a] = scoredNames[b];
+         scores[b]      = tmpScore;
+         scoredNames[b] = tmpName;
+        }
+     }
+
+   int limit = MathMin(count, 5);
+   for(int i = 0; i < limit; i++)
+      AddUniqueSuggestion(suggestions, scoredNames[i]);
+  }
+
+//+------------------------------------------------------------------+
+//| Print Market Watch suggestions for an invalid configured symbol  |
+//+------------------------------------------------------------------+
+void PrintSimilarSymbolSuggestions(const string configured)
+  {
+   string suggestions[];
+   CollectSimilarSymbolSuggestions(configured, suggestions);
+
+   if(ArraySize(suggestions) == 0)
+      return;
+
+   Print("Configured symbol '", configured, "' not found.");
+   Print("Did you mean:");
+   for(int i = 0; i < ArraySize(suggestions); i++)
+      Print(" - ", suggestions[i]);
+  }
+
+//+------------------------------------------------------------------+
+//| Log SymbolExist / SymbolSelect for one configured name           |
+//+------------------------------------------------------------------+
+void LogSymbolValidationDetail(const string symbol, const string context)
+  {
+   bool isCustom = false;
+   bool exists   = SymbolExist(symbol, isCustom);
+   if(!exists)
+      exists = (SymbolInfoInteger(symbol, SYMBOL_EXIST) != 0);
+
+   Print("BrokerDataCollector: SymbolExist('", symbol, "')=", (exists ? "YES" : "NO"),
+         " isCustom=", (isCustom ? "true" : "false"),
+         " context=", context);
+
+   ResetLastError();
+   bool selected = SymbolSelect(symbol, true);
+   int  err      = GetLastError();
+   Print("BrokerDataCollector: SymbolSelect('", symbol, "', true)=", (selected ? "YES" : "NO"),
+         " error=", err, " context=", context);
+  }
+
+//+------------------------------------------------------------------+
+//| True when candidate is already listed in a string array          |
+//+------------------------------------------------------------------+
+bool ArrayContainsSymbol(const string &items[], const string symbol)
+  {
+   for(int i = 0; i < ArraySize(items); i++)
+     {
+      if(items[i] == symbol)
+         return true;
+     }
+   return false;
+  }
+
+//+------------------------------------------------------------------+
+//| Try one broker symbol candidate during resolution                |
+//+------------------------------------------------------------------+
+bool TryBrokerSymbolCandidate(const string configured,
+                              const string candidate,
+                              string &resolved)
+  {
+   if(!IsCollectibleBrokerSymbol(candidate))
+      return false;
+
+   resolved = candidate;
+   if(resolved != configured)
+      Print("BrokerDataCollector: Resolved configured '", configured,
+            "' -> broker '", resolved, "'");
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| Map configured input to exact broker symbol name when possible   |
+//+------------------------------------------------------------------+
+bool ResolveBrokerSymbol(const string configured, string &resolved)
+  {
+   if(TryBrokerSymbolCandidate(configured, configured, resolved))
+      return true;
+
+   string withHash = configured + "#";
+   if(TryBrokerSymbolCandidate(configured, withHash, resolved))
+      return true;
+
+   if(configured == "XAUUSD" || configured == "GOLD")
+     {
+      string goldCandidates[] = {"GOLD#", "GOLD", "XAUUSD#", "XAUUSD"};
+      for(int i = 0; i < ArraySize(goldCandidates); i++)
+        {
+         if(TryBrokerSymbolCandidate(configured, goldCandidates[i], resolved))
+            return true;
+        }
+     }
+
+   if(configured == "US100" || configured == "NAS100" || configured == "USTEC")
+     {
+      string indexCandidates[] = {"US100Cash#", "US100#", "NAS100#", "USTEC#", "US100", "NAS100"};
+      for(int i = 0; i < ArraySize(indexCandidates); i++)
+        {
+         if(TryBrokerSymbolCandidate(configured, indexCandidates[i], resolved))
+            return true;
+        }
+     }
+
+   if(configured == "BTCUSD")
+     {
+      string btcCandidates[] = {"BTCUSD#", "BTCUSD"};
+      for(int i = 0; i < ArraySize(btcCandidates); i++)
+        {
+         if(TryBrokerSymbolCandidate(configured, btcCandidates[i], resolved))
+            return true;
+        }
+     }
+
+   if(configured == "EURUSD")
+     {
+      string eurCandidates[] = {"EURUSD#", "EURUSD"};
+      for(int i = 0; i < ArraySize(eurCandidates); i++)
+        {
+         if(TryBrokerSymbolCandidate(configured, eurCandidates[i], resolved))
+            return true;
+        }
+     }
+
+   return false;
+  }
+
+//+------------------------------------------------------------------+
+//| Log collection loop banner                                       |
+//+------------------------------------------------------------------+
+void LogCollectionLoopBanner(const string loopSymbol, const ENUM_TIMEFRAMES tf)
+  {
+   Print("-----------------------------------");
+   Print("Processing symbol = ", loopSymbol);
+   Print("Timeframe = ", TimeframeLabel(tf));
+   Print("-----------------------------------");
+  }
+
+//+------------------------------------------------------------------+
+//| Record or update startup diagnostic row for one configured symbol |
+//+------------------------------------------------------------------+
+void UpsertSymbolDiagnostic(const SymbolStartupDiagnostic &entry)
+  {
+   for(int i = 0; i < ArraySize(g_symbol_diagnostics); i++)
+     {
+      if(g_symbol_diagnostics[i].configured != entry.configured)
+         continue;
+
+      g_symbol_diagnostics[i] = entry;
+      return;
+     }
+
+   int n = ArraySize(g_symbol_diagnostics);
+   ArrayResize(g_symbol_diagnostics, n + 1);
+   g_symbol_diagnostics[n] = entry;
+  }
+
+//+------------------------------------------------------------------+
+//| Probe one configured symbol for startup diagnostic report        |
+//+------------------------------------------------------------------+
+void ProbeSymbolStartupDiagnostic(const string configured)
+  {
+   SymbolStartupDiagnostic diag;
+   diag.configured        = configured;
+   diag.resolved          = configured;
+   diag.exists            = false;
+   diag.selected          = false;
+   diag.copy_rates_ok     = false;
+   diag.copy_rates_bars   = 0;
+   diag.copy_rates_reason = "Symbol not resolved on broker";
+   diag.csv_written       = false;
+   diag.rows_written      = 0;
+
+   string resolved = configured;
+   if(!ResolveBrokerSymbol(configured, resolved))
+     {
+      LogSymbolValidationDetail(configured, "StartupDiagnostic");
+      UpsertSymbolDiagnostic(diag);
+      return;
+     }
+
+   diag.resolved = resolved;
+
+   bool isCustom = false;
+   diag.exists = SymbolExist(resolved, isCustom);
+   if(!diag.exists)
+      diag.exists = (SymbolInfoInteger(resolved, SYMBOL_EXIST) != 0);
+
+   ResetLastError();
+   diag.selected = SymbolSelect(resolved, true);
+   if(!diag.selected)
+      diag.copy_rates_reason = "SymbolSelect failed (error " + IntegerToString(GetLastError()) + ")";
+   else if(ArraySize(g_timeframes) > 0)
+     {
+      ENUM_TIMEFRAMES tf = g_timeframes[0];
+      int requestBars = MathMax(1, MathMin(BackfillBars, 1000));
+      MqlRates rates[];
+      ArraySetAsSeries(rates, true);
+
+      ResetLastError();
+      int copied = CopyRates(resolved, tf, 1, requestBars, rates);
+      int err    = GetLastError();
+
+      diag.copy_rates_bars = copied;
+      if(copied > 0)
+        {
+         diag.copy_rates_ok     = true;
+         diag.copy_rates_reason = "";
+        }
+      else
+         diag.copy_rates_reason = ExplainCopyRatesFailure(resolved, tf, requestBars, err);
+     }
+
+   UpsertSymbolDiagnostic(diag);
+  }
+
+//+------------------------------------------------------------------+
+//| Add rows written from one backfill pass to startup diagnostics   |
+//+------------------------------------------------------------------+
+void RecordStartupCsvRows(const string resolvedSymbol, const int rowsWritten)
+  {
+   for(int i = 0; i < ArraySize(g_symbol_diagnostics); i++)
+     {
+      if(g_symbol_diagnostics[i].resolved != resolvedSymbol)
+         continue;
+
+      if(rowsWritten > 0)
+        {
+         g_symbol_diagnostics[i].csv_written  = true;
+         g_symbol_diagnostics[i].rows_written += rowsWritten;
+        }
+      return;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| True when configured input resolved into an active symbol        |
+//+------------------------------------------------------------------+
+bool SymbolStartupDiagnosticResolvedActive(const string configured)
+  {
+   for(int i = 0; i < ArraySize(g_symbol_diagnostics); i++)
+     {
+      if(g_symbol_diagnostics[i].configured != configured)
+         continue;
+      return ArrayContainsSymbol(g_symbols, g_symbol_diagnostics[i].resolved);
+     }
+   return false;
+  }
+
+//+------------------------------------------------------------------+
+//| Final per-symbol startup report requested for diagnostics        |
+//+------------------------------------------------------------------+
+void PrintFinalStartupDiagnosticReport()
+  {
+   Print("");
+   Print("=========================================");
+   Print("SYMBOL STARTUP DIAGNOSTIC REPORT");
+   Print("=========================================");
+   Print("");
+   Print("Configured symbols:");
+
+   for(int i = 0; i < ArraySize(g_configured_symbols); i++)
+     {
+      string label = g_configured_symbols[i];
+      bool active  = SymbolStartupDiagnosticResolvedActive(label);
+      Print((active ? "✓ " : "✗ "), label);
+     }
+
+   Print("");
+
+   for(int i = 0; i < ArraySize(g_symbol_diagnostics); i++)
+     {
+      SymbolStartupDiagnostic diag = g_symbol_diagnostics[i];
+      string display = (diag.resolved != "" ? diag.resolved : diag.configured);
+
+      Print(display);
+      Print("Configured as: ", diag.configured);
+      Print("Exists: ", (diag.exists ? "YES" : "NO"));
+      Print("Selected: ", (diag.selected ? "YES" : "NO"));
+
+      if(diag.copy_rates_ok)
+         Print("CopyRates: YES (", diag.copy_rates_bars, " bars)");
+      else
+         Print("CopyRates: FAILED (0 bars)");
+
+      if(diag.copy_rates_reason != "")
+         Print("Reason: ", diag.copy_rates_reason);
+
+      if(diag.csv_written)
+         Print("CSV Written: YES (", diag.rows_written, " rows)");
+      else
+         Print("CSV Written: NO");
+
+      Print("");
+     }
+
+   Print("Active collection symbols (g_symbols):");
+   LogConfiguredSymbols("FinalStartupDiagnosticReport");
+   Print("=========================================");
+  }
+
+//+------------------------------------------------------------------+
+//| Validate parsed symbols; keep only collectible names in g_symbols |
+//+------------------------------------------------------------------+
+bool ValidateAndActivateSymbols(const string &configured[],
+                                string &validSymbols[],
+                                string &skippedSymbols[])
+  {
+   ArrayResize(validSymbols, 0);
+   ArrayResize(skippedSymbols, 0);
+
+   for(int i = 0; i < ArraySize(configured); i++)
+     {
+      string symbol = configured[i];
+
+      LogSymbolValidationDetail(symbol, "ValidateAndActivateSymbols");
+
+      string resolved = symbol;
+      if(ResolveBrokerSymbol(symbol, resolved))
+        {
+         if(ArrayContainsSymbol(validSymbols, resolved))
+            continue;
+
+         int n = ArraySize(validSymbols);
+         ArrayResize(validSymbols, n + 1);
+         validSymbols[n] = resolved;
+         continue;
+        }
+
+      Print("BrokerDataCollector: WARNING — configured symbol '", symbol,
+            "' is invalid on this broker (SymbolExist/SymbolSelect failed). Skipping.");
+
+      int skippedCount = ArraySize(skippedSymbols);
+      ArrayResize(skippedSymbols, skippedCount + 1);
+      skippedSymbols[skippedCount] = symbol;
+
+      PrintSimilarSymbolSuggestions(symbol);
+     }
+
+   return ArraySize(validSymbols) > 0;
+  }
+
+//+------------------------------------------------------------------+
+//| Print formatted startup summary after symbol/timeframe validation  |
+//+------------------------------------------------------------------+
+void PrintStartupSummary()
+  {
+   Print("=========================================");
+   Print("Broker Data Collector Startup");
+   Print("=========================================");
+   Print("");
+   Print("Configured Symbols:");
+
+   int validCount = ArraySize(g_symbols);
+   if(validCount == 0)
+      Print("(none)");
+   else
+     {
+      for(int i = 0; i < validCount; i++)
+         Print("✓ ", g_symbols[i]);
+     }
+
+   Print("");
+   Print("Skipped Symbols:");
+
+   int skippedCount = ArraySize(g_skipped_symbols);
+   if(skippedCount == 0)
+      Print("(none)");
+   else
+     {
+      for(int i = 0; i < skippedCount; i++)
+         Print("✗ ", g_skipped_symbols[i]);
+     }
+
+   Print("");
+   Print("Timeframes:");
+   for(int i = 0; i < ArraySize(g_timeframes); i++)
+      Print(TimeframeLabel(g_timeframes[i]));
+
+   Print("");
+   Print("Backfill:");
+   if(EnableBackfill && BackfillBars > 0)
+      Print(IntegerToString(BackfillBars), " bars");
+   else
+      Print("disabled");
+
+   Print("");
+   Print("Export:");
+   Print(ExportFormatLabel());
+
+   Print("");
+   Print("Streams:");
+   Print(IntegerToString(StreamCount()));
+
+   Print("=========================================");
+  }
+
+//+------------------------------------------------------------------+
 //| Expert initialization                                            |
 //+------------------------------------------------------------------+
 int OnInit()
@@ -248,10 +897,26 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
      }
 
-   if(!ParseSymbolList(InpSymbols, g_symbols))
+   string parsedSymbols[];
+   Print("BrokerDataCollector: InpSymbols raw=<", InpSymbols, ">");
+
+   if(!ParseSymbolList(InpSymbols, parsedSymbols))
      {
       Print("BrokerDataCollector: no valid symbols in input list.");
       return INIT_PARAMETERS_INCORRECT;
+     }
+
+   ArrayResize(g_configured_symbols, ArraySize(parsedSymbols));
+   for(int p = 0; p < ArraySize(parsedSymbols); p++)
+     {
+      g_configured_symbols[p] = parsedSymbols[p];
+      Print("BrokerDataCollector: parsed symbol[", p, "]=<", parsedSymbols[p], ">");
+     }
+
+   if(!ValidateAndActivateSymbols(parsedSymbols, g_symbols, g_skipped_symbols))
+     {
+      Print("BrokerDataCollector: no collectible broker symbols — update InpSymbols using Market Watch names.");
+      return INIT_FAILED;
      }
 
    if(!ParseTimeframeList(InpTimeframes, g_timeframes))
@@ -269,15 +934,16 @@ int OnInit()
       return INIT_FAILED;
      }
 
+   PrintStartupSummary();
+
+   for(int d = 0; d < ArraySize(g_configured_symbols); d++)
+      ProbeSymbolStartupDiagnostic(g_configured_symbols[d]);
+
    for(int i = 0; i < ArraySize(g_symbols); i++)
      {
-      string symbol = g_symbols[i];
-      if(!SymbolSelect(symbol, true))
-        {
-         Print("BrokerDataCollector: SymbolSelect failed for ", symbol,
-               " (error ", GetLastError(), ").");
+      string loopSymbol = g_symbols[i];
+      if(!PrepareSymbolForData(loopSymbol, "OnInit"))
          continue;
-        }
 
       for(int j = 0; j < ArraySize(g_timeframes); j++)
         {
@@ -289,16 +955,17 @@ int OnInit()
             BackfillStats stats;
             ResetBackfillStats(stats);
             BackfillSymbol(i, j, stats);
-            PrintBackfillSummary(symbol, tf, stats);
-            AppendDailySummaryRow(symbol, tf, stats);
+            PrintBackfillSummary(loopSymbol, tf, stats);
+            AppendDailySummaryRow(loopSymbol, tf, stats);
+            RecordStartupCsvRows(loopSymbol, stats.bars_written);
            }
          else
            {
             g_lastWrittenBarTime[streamIndex] =
-               ReadLastTimestampFromDailyFile(symbol, tf, TimeCurrent());
+               ReadLastTimestampFromDailyFile(loopSymbol, tf, TimeCurrent());
            }
 
-         Print("BrokerDataCollector: tracking ", symbol, " ", TimeframeLabel(tf),
+         Print("BrokerDataCollector: tracking symbol=<", loopSymbol, "> ", TimeframeLabel(tf),
                ", last written bar: ",
                (g_lastWrittenBarTime[streamIndex] > 0
                 ? TimeToString(g_lastWrittenBarTime[streamIndex], TIME_DATE | TIME_SECONDS)
@@ -308,18 +975,16 @@ int OnInit()
 
    WriteManifest();
 
+   PrintFinalStartupDiagnosticReport();
+
    if(!EventSetTimer(InpTimerSeconds))
      {
       Print("BrokerDataCollector: EventSetTimer failed (error ", GetLastError(), ").");
       return INIT_FAILED;
      }
 
-   Print("BrokerDataCollector: started. Symbols=", ArraySize(g_symbols),
-         ", timeframes=", ArraySize(g_timeframes),
-         ", streams=", StreamCount(),
-         ", timer=", InpTimerSeconds, "s",
-         ", backfill=", (EnableBackfill ? "on" : "off"),
-         ", export=", ExportFormatLabel());
+   Print("BrokerDataCollector: started — timer=", InpTimerSeconds, "s",
+         " (collection uses InpSymbols only; chart symbol is never used)");
    return INIT_SUCCEEDED;
   }
 
@@ -371,18 +1036,20 @@ void BackfillSymbol(const int symbolIndex,
   {
    ResetBackfillStats(stats);
 
-   string symbol = g_symbols[symbolIndex];
+   string loopSymbol = g_symbols[symbolIndex];
    ENUM_TIMEFRAMES tf = g_timeframes[tfIndex];
    int streamIndex = StreamIndex(symbolIndex, tfIndex);
 
-   if(!SymbolSelect(symbol, true))
+   LogCollectionLoopBanner(loopSymbol, tf);
+
+   if(!PrepareSymbolForData(loopSymbol, "BackfillSymbol"))
       return;
 
-   int available = Bars(symbol, tf);
+   int available = Bars(loopSymbol, tf);
    if(available < 2)
      {
-      Print("BrokerDataCollector: insufficient history for backfill on ",
-            symbol, " ", TimeframeLabel(tf), ".");
+      Print("BrokerDataCollector: insufficient history for backfill on symbol=<",
+            loopSymbol, "> ", TimeframeLabel(tf), ".");
       return;
      }
 
@@ -391,17 +1058,16 @@ void BackfillSymbol(const int symbolIndex,
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
 
-   int copied = CopyRates(symbol, tf, 1, requestBars, rates);
+   int copied = CopyRatesForLoopSymbol(loopSymbol, tf, 1, requestBars, rates, "BackfillSymbol");
    if(copied < 1)
-     {
-      Print("BrokerDataCollector: backfill CopyRates failed for ", symbol,
-            " ", TimeframeLabel(tf), " (error ", GetLastError(), ").");
       return;
-     }
 
    int      written        = 0;
    datetime dayAnchor      = 0;
    datetime dayLastWritten = 0;
+   int      dayHandle      = INVALID_HANDLE;
+   string   dayFilePath    = "";
+   string   dayFilename    = "";
 
    for(int i = copied - 1; i >= 0; i--)
      {
@@ -410,35 +1076,74 @@ void BackfillSymbol(const int symbolIndex,
 
       if(barDay != dayAnchor)
         {
+         if(dayHandle != INVALID_HANDLE)
+           {
+            FileFlush(dayHandle);
+            CloseTrackedFile(dayFilePath, dayHandle);
+            dayHandle = INVALID_HANDLE;
+           }
+
          dayAnchor      = barDay;
-         dayLastWritten = ReadLastTimestampFromDailyFile(symbol, tf, barTime);
+         dayLastWritten = ReadLastTimestampFromDailyFile(loopSymbol, tf, barTime);
+         dayFilename    = BuildDailyFileName(loopSymbol, tf, barTime);
+         dayFilePath    = GetDataOutputFolder() + "\\" + dayFilename;
+         bool isNewDayFile = !FileIsExist(dayFilePath);
+
+         Print("BrokerDataCollector: backfill open day file symbol=<", loopSymbol,
+               "> Filename=<", dayFilename, "> Folder=<", GetDataOutputFolder(), ">");
+
+         dayHandle = OpenFileWithRetry(dayFilePath, FILE_READ | FILE_WRITE | FILE_ANSI,
+                                       "BackfillSymbol day");
+         if(dayHandle == INVALID_HANDLE)
+           {
+            Print("BrokerDataCollector: backfill skipping day symbol=<", loopSymbol,
+                  "> Filename=<", dayFilename, "> — could not open file");
+            dayAnchor = 0;
+            continue;
+           }
+
+         if(isNewDayFile)
+            FileWriteString(dayHandle, GetDataCsvHeader() + "\r\n");
+         else
+            FileSeek(dayHandle, 0, SEEK_END);
         }
 
       if(barTime <= dayLastWritten)
          continue;
 
-      if(!AppendBarRow(symbol, tf, rates[i]))
+      if(dayHandle == INVALID_HANDLE)
          continue;
 
-      int spreadPoints = (int)SymbolInfoInteger(symbol, SYMBOL_SPREAD);
+      string row = BuildBarRow(loopSymbol, tf, rates[i]);
+      FileWriteString(dayHandle, row + "\r\n");
+
+      int spreadPoints = (int)SymbolInfoInteger(loopSymbol, SYMBOL_SPREAD);
       RecordWrittenBar(stats, barTime, spreadPoints);
 
       written++;
       dayLastWritten = barTime;
 
+      if(written == 1 || written % 500 == 0)
+         Print("BrokerDataCollector: Writing CSV symbol=<", loopSymbol,
+               "> Filename=<", dayFilename, "> Rows=<", written,
+               "> Folder=<", GetDataOutputFolder(), "> context=BackfillSymbol");
+
       if(barTime > g_lastWrittenBarTime[streamIndex])
          g_lastWrittenBarTime[streamIndex] = barTime;
      }
 
-   datetime todayLast = ReadLastTimestampFromDailyFile(symbol, tf, TimeCurrent());
+   if(dayHandle != INVALID_HANDLE)
+     {
+      FileFlush(dayHandle);
+      CloseTrackedFile(dayFilePath, dayHandle);
+     }
+
+   datetime todayLast = ReadLastTimestampFromDailyFile(loopSymbol, tf, TimeCurrent());
    if(todayLast > g_lastWrittenBarTime[streamIndex])
       g_lastWrittenBarTime[streamIndex] = todayLast;
 
-   Print("BrokerDataCollector: backfill ", symbol, " ", TimeframeLabel(tf),
+   Print("BrokerDataCollector: backfill symbol=<", loopSymbol, "> ", TimeframeLabel(tf),
          " — ", written, " bar(s) written (requested ", BackfillBars, ")");
-
-   if(written > 0)
-      WriteManifest();
   }
 
 //+------------------------------------------------------------------+
@@ -471,10 +1176,12 @@ void PrintBackfillSummary(const string symbol,
 //+------------------------------------------------------------------+
 //| Append one row to the daily backfill summary CSV                 |
 //+------------------------------------------------------------------+
-bool AppendDailySummaryRow(const string symbol,
+bool AppendDailySummaryRow(const string loopSymbol,
                            const ENUM_TIMEFRAMES tf,
                            const BackfillStats &stats)
   {
+   Print("BrokerDataCollector: Processing symbol=<", loopSymbol, "> context=AppendDailySummaryRow");
+
    string filePath = OUTPUT_FOLDER + "\\" + BuildSummaryFileName();
    bool isNewFile = !FileIsExist(filePath);
 
@@ -501,7 +1208,7 @@ bool AppendDailySummaryRow(const string symbol,
                              dateStr,
                              CsvEscape(broker),
                              CsvEscape(server),
-                             CsvEscape(symbol),
+                             CsvEscape(loopSymbol),
                              tfLabel,
                              stats.bars_written,
                              DoubleToString(avgSpread, 2),
@@ -532,6 +1239,8 @@ void OnTimer()
    for(int i = 0; i < ArraySize(g_symbols); i++)
       for(int j = 0; j < ArraySize(g_timeframes); j++)
          CollectSymbolBar(i, j);
+
+   WriteManifest();
   }
 
 //+------------------------------------------------------------------+
@@ -539,47 +1248,66 @@ void OnTimer()
 //+------------------------------------------------------------------+
 void CollectSymbolBar(const int symbolIndex, const int tfIndex)
   {
-   string symbol = g_symbols[symbolIndex];
+   string loopSymbol = g_symbols[symbolIndex];
    ENUM_TIMEFRAMES tf = g_timeframes[tfIndex];
    int streamIndex = StreamIndex(symbolIndex, tfIndex);
 
-   if(!SymbolSelect(symbol, true))
+   LogCollectionLoopBanner(loopSymbol, tf);
+
+   if(!PrepareSymbolForData(loopSymbol, "CollectSymbolBar"))
       return;
 
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
 
-   int copied = CopyRates(symbol, tf, 1, 1, rates);
+   int copied = CopyRatesForLoopSymbol(loopSymbol, tf, 1, 1, rates, "CollectSymbolBar");
    if(copied < 1)
-     {
-      Print("BrokerDataCollector: CopyRates failed for ", symbol,
-            " ", TimeframeLabel(tf), " (error ", GetLastError(), ").");
       return;
-     }
 
    datetime barTime = rates[0].time;
    if(barTime <= g_lastWrittenBarTime[streamIndex])
       return;
 
-   if(!AppendBarRow(symbol, tf, rates[0]))
+   if(!AppendBarRow(loopSymbol, tf, rates[0]))
      {
-      Print("BrokerDataCollector: failed to write row for ", symbol,
-            " ", TimeframeLabel(tf), ".");
+      Print("BrokerDataCollector: failed to write row for symbol=<", loopSymbol,
+            "> ", TimeframeLabel(tf), ".");
       return;
      }
 
    g_lastWrittenBarTime[streamIndex] = barTime;
-   WriteManifest();
   }
 
 //+------------------------------------------------------------------+
-//| Append one CSV row (creates file + header when needed)           |
+//| Build one CSV data row for the active export format              |
 //+------------------------------------------------------------------+
-bool AppendBarRow(const string symbol,
+string BuildBarRow(const string loopSymbol, const ENUM_TIMEFRAMES tf, const MqlRates &bar)
+  {
+   if(ExportFormat == EXPORT_COMPETITION_LAB)
+      return BuildCompetitionLabRow(loopSymbol, bar);
+
+   double bid          = SymbolInfoDouble(loopSymbol, SYMBOL_BID);
+   double ask          = SymbolInfoDouble(loopSymbol, SYMBOL_ASK);
+   int    spreadPoints = (int)SymbolInfoInteger(loopSymbol, SYMBOL_SPREAD);
+   int    digits       = (int)SymbolInfoInteger(loopSymbol, SYMBOL_DIGITS);
+   double point        = SymbolInfoDouble(loopSymbol, SYMBOL_POINT);
+   double spreadPrice  = (ask - bid);
+   return BuildCsvRow(loopSymbol, tf, bar, bid, ask, spreadPoints, spreadPrice, digits, point);
+  }
+
+//+------------------------------------------------------------------+
+//| Append one CSV row (timer path — single open/close per bar)      |
+//+------------------------------------------------------------------+
+bool AppendBarRow(const string loopSymbol,
                   const ENUM_TIMEFRAMES tf,
                   const MqlRates &bar)
   {
-   string filePath = GetDataOutputFolder() + "\\" + BuildDailyFileName(symbol, tf, bar.time);
+   string filename = BuildDailyFileName(loopSymbol, tf, bar.time);
+   string folder   = GetDataOutputFolder();
+   Print("BrokerDataCollector: Writing CSV symbol=<", loopSymbol,
+         "> Filename=<", filename, "> Rows=<1> Folder=<", folder, "> context=AppendBarRow");
+
+   string filePath = folder + "\\" + filename;
 
    bool isNewFile = !FileIsExist(filePath);
    int handle = OpenFileWithRetry(filePath, FILE_READ | FILE_WRITE | FILE_ANSI, "AppendBarRow");
@@ -591,21 +1319,7 @@ bool AppendBarRow(const string symbol,
    else
       FileSeek(handle, 0, SEEK_END);
 
-   string row;
-   if(ExportFormat == EXPORT_COMPETITION_LAB)
-      row = BuildCompetitionLabRow(symbol, bar);
-   else
-     {
-      double bid          = SymbolInfoDouble(symbol, SYMBOL_BID);
-      double ask          = SymbolInfoDouble(symbol, SYMBOL_ASK);
-      int    spreadPoints = (int)SymbolInfoInteger(symbol, SYMBOL_SPREAD);
-      int    digits       = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-      double point        = SymbolInfoDouble(symbol, SYMBOL_POINT);
-      double spreadPrice  = (ask - bid);
-      row = BuildCsvRow(symbol, tf, bar, bid, ask, spreadPoints, spreadPrice, digits, point);
-     }
-
-   FileWriteString(handle, row + "\r\n");
+   FileWriteString(handle, BuildBarRow(loopSymbol, tf, bar) + "\r\n");
    FileFlush(handle);
    CloseTrackedFile(filePath, handle);
    return true;
@@ -690,12 +1404,22 @@ string BuildAccountTypeCompany()
   }
 
 //+------------------------------------------------------------------+
-//| Parse comma-separated symbol list                                |
+//| Parse symbol list (comma, semicolon, space, or newline separated)|
 //+------------------------------------------------------------------+
 bool ParseSymbolList(const string raw, string &symbols[])
   {
+   string normalized = raw;
+   StringReplace(normalized, ";", ",");
+   StringReplace(normalized, "\r", ",");
+   StringReplace(normalized, "\n", ",");
+   StringReplace(normalized, "\t", ",");
+   StringReplace(normalized, " ", ",");
+
+   while(StringFind(normalized, ",,") >= 0)
+      StringReplace(normalized, ",,", ",");
+
    string parts[];
-   int count = StringSplit(raw, ',', parts);
+   int count = StringSplit(normalized, ',', parts);
    if(count < 1)
       return false;
 
@@ -705,6 +1429,18 @@ bool ParseSymbolList(const string raw, string &symbols[])
      {
       string sym = Trim(parts[i]);
       if(sym == "")
+         continue;
+
+      bool duplicate = false;
+      for(int d = 0; d < ArraySize(symbols); d++)
+        {
+         if(symbols[d] == sym)
+           {
+            duplicate = true;
+            break;
+           }
+        }
+      if(duplicate)
          continue;
 
       int n = ArraySize(symbols);
@@ -911,15 +1647,17 @@ datetime BarDayStart(const datetime barTime)
 //+------------------------------------------------------------------+
 //| Read last written bar timestamp from a daily file (resume safe)  |
 //+------------------------------------------------------------------+
-datetime ReadLastTimestampFromDailyFile(const string symbol,
+datetime ReadLastTimestampFromDailyFile(const string loopSymbol,
                                         const ENUM_TIMEFRAMES tf,
                                         const datetime barTime)
   {
-   string filePath = GetDataOutputFolder() + "\\" + BuildDailyFileName(symbol, tf, barTime);
+   string filename = BuildDailyFileName(loopSymbol, tf, barTime);
+   string filePath = GetDataOutputFolder() + "\\" + filename;
    if(!FileIsExist(filePath))
       return 0;
 
-   int handle = OpenFileWithRetry(filePath, FILE_READ | FILE_ANSI, "ReadLastTimestampFromDailyFile");
+   int handle = OpenFileWithRetry(filePath, FILE_READ | FILE_ANSI,
+                                  "ReadLastTimestampFromDailyFile symbol=" + loopSymbol);
    if(handle == INVALID_HANDLE)
       return 0;
 
@@ -1245,6 +1983,10 @@ bool WriteManifest()
   {
    ManifestFileEntry files[];
    CollectManifestFilesFromDisk(files);
+
+   Print("BrokerDataCollector: WriteManifest configured_symbols=", ArraySize(g_symbols),
+         " indexed_files=", ArraySize(files));
+   LogConfiguredSymbols("WriteManifest");
 
    string json = "{\n";
    json += "  \"generated_at\": \"" + JsonEscape(TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS)) + "\",\n";

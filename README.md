@@ -17,6 +17,59 @@ A broker-universal **MetaTrader 5 Expert Advisor** that records broker-specific 
 - **Backfill quality summary** — per-symbol stats in Experts journal + daily `summary_YYYYMMDD.csv`
 - **Export formats** — `Raw` (default) or `CompetitionLab` for Quant Competition Lab import
 - **`manifest.json`** — auto-maintained dataset index for Quant Competition Lab discovery
+- **Startup symbol validation (v1.55+)** — invalid symbols skipped with similar-name suggestions; EA keeps running
+
+## Finding broker symbol names
+
+Symbol names are **broker-specific**. The EA input must match Market Watch exactly.
+
+1. Open **View → Market Watch** (or press `Ctrl+M`)
+2. Right-click → **Symbols** → search your instrument
+3. Double-click to add to Market Watch
+4. Copy the **exact** symbol text into `InpSymbols`
+
+### Common broker naming differences
+
+| Generic / common name | Broker examples |
+|-----------------------|-----------------|
+| `BTCUSD` | `BTCUSD#`, `BTCUSD.m`, `Bitcoin` |
+| `XAUUSD` / gold | `GOLD#`, `XAUUSD#`, `XAUUSD.` |
+| `US100` / Nasdaq | `US100Cash#`, `NAS100`, `USTEC`, `US100-SEP26` |
+| `EURUSD` | `EURUSD#`, `EURUSD.m` |
+
+The EA validates every symbol at startup. If a name is wrong, the Experts journal shows:
+
+```
+Configured symbol 'US100' not found.
+Did you mean:
+ - US100Cash#
+ - US100-SEP26
+```
+
+Invalid symbols are **skipped** — the EA continues collecting the rest.
+
+### Example `InpSymbols` inputs
+
+All of these are equivalent:
+
+```
+BTCUSD#,GOLD#,US100Cash#,EURUSD#
+```
+
+```
+BTCUSD#
+GOLD#
+US100Cash#
+EURUSD#
+```
+
+```
+BTCUSD#;GOLD#;US100Cash#;EURUSD#
+```
+
+```
+BTCUSD# GOLD# US100Cash# EURUSD#
+```
 
 ## CSV schema
 
@@ -262,7 +315,7 @@ df = df.sort_values("Timestamp").drop_duplicates(subset=["Timestamp"], keep="las
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `InpSymbols` | `BTCUSD,XAUUSD,US100,EURUSD` | Symbols to collect |
+| `InpSymbols` | `BTCUSD,XAUUSD,US100,EURUSD` | Symbols to collect (comma, semicolon, space, or newline separated — use exact broker names) |
 | `InpTimeframes` | `M1,M5,M15,H1` | Comma-separated timeframes |
 | `InpTimerSeconds` | 60 | Collection interval in seconds |
 | `EnableBackfill` | true | Backfill closed bars on attach |
@@ -274,10 +327,48 @@ df = df.sort_values("Timestamp").drop_duplicates(subset=["Timestamp"], keep="las
 | Issue | What to check |
 |-------|----------------|
 | No CSV files | Algo Trading enabled; Experts journal for errors; folder permissions |
-| Symbol not found | Rename in `InpSymbols` to match broker (e.g. `NAS100` vs `US100`) |
+| Invalid symbol at startup | Check startup summary — skipped symbols listed with `✗`. Use exact Market Watch names |
+| Only one symbol produces files | Experts log: `Processing symbol=<…>`, `SymbolSelect failed`, or `symbol does not exist on this broker`. Each symbol must match broker Market Watch names exactly (e.g. `BTCUSD#` not `BTCUSD`) |
+| Symbol not found | Read "Did you mean:" suggestions in Experts journal; rename in `InpSymbols` (e.g. `NAS100` vs `US100`, `GOLD#` vs `XAUUSD`) |
+| EA won't start | All configured symbols invalid — fix at least one name in `InpSymbols` |
 | Duplicate rows after manual edit | EA skips duplicates by timestamp; remove bad rows from CSV or delete file |
 | Backfill writes fewer bars than requested | Broker may have less history; check **Experts** journal for actual count |
+| FileOpen error 5004 during backfill | Fixed in v1.54+ (batched per-day file writes). Recompile and re-attach |
 | Slow startup | Many symbols × timeframes × `BackfillBars` is normal; reduce scope or disable backfill |
+
+### Startup summary (v1.55+)
+
+On attach, the Experts journal prints:
+
+```
+=========================================
+Broker Data Collector Startup
+=========================================
+
+Configured Symbols:
+✓ BTCUSD#
+✓ GOLD#
+✓ US100Cash#
+✓ EURUSD#
+
+Skipped Symbols:
+(none)
+
+Timeframes:
+M15
+H1
+
+Backfill:
+1000 bars
+
+Export:
+CompetitionLab
+
+Streams:
+8
+
+=========================================
+```
 
 ## License / use
 
@@ -285,4 +376,4 @@ For personal research and backtesting. Verify compliance with your broker's term
 
 ## Version
 
-See [CHANGELOG.md](CHANGELOG.md) — current release **1.5.0**.
+See [CHANGELOG.md](CHANGELOG.md) — current release **1.5.5**.

@@ -4,6 +4,41 @@ All notable changes to Broker Data Collector are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.5.5] - 2026-06-08
+
+### Added
+
+- **Startup symbol validation** — `SymbolExist` + `SymbolSelect` for every configured symbol before collection; invalid symbols skipped with warnings (EA continues)
+- **Similar symbol suggestions** — scans terminal symbols and prints "Did you mean:" hints (e.g. `US100` → `US100Cash#`, `XAUUSD` → `GOLD#`)
+- **Startup summary** — formatted journal block listing valid symbols, skipped symbols, timeframes, backfill, export format, and stream count
+- **Improved symbol parser** — supports comma, semicolon, space, tab, and newline separators
+
+## [1.5.4] - 2026-06-08
+
+### Fixed
+
+- **Backfill FileOpen 5004 storms** — group bars by calendar day; open each daily CSV once per symbol/timeframe/day, write all rows, then close (no per-candle FileOpen)
+- **Manifest throttling** — `WriteManifest()` once after full OnInit backfill pass; once per timer cycle (not per bar or per stream)
+
+### Added
+
+- `BuildBarRow()` shared row builder for timer append and batched backfill writes
+
+## [1.5.3] - 2026-06-08
+
+### Fixed
+
+- **Symbol propagation audit** — confirmed entire pipeline uses configured loop symbols from `g_symbols[]`; no `_Symbol` or `Symbol()` usage
+- Silent `SymbolSelect` failures in `BackfillSymbol` and `CollectSymbolBar` now log clearly
+- `PrepareSymbolForData()` centralizes `SymbolSelect` with `SYMBOL_EXIST` check before every collection stage
+- `CopyRatesForLoopSymbol()` logs and calls `CopyRates` with explicit loop symbol only
+
+### Added
+
+- Pipeline debug logging: `Processing symbol=<…>`, `CopyRates symbol=<…>`, `Writing CSV symbol=<…> Filename=<…>`
+- `LogConfiguredSymbols()` on init and manifest write
+- `ParseSymbolList` logs each added symbol; supports comma, semicolon, and newline delimiters; skips duplicates
+
 ## [1.5.2] - 2026-06-08
 
 ### Added
