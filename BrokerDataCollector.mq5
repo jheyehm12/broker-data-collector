@@ -4,7 +4,7 @@
 //|                     Research / backtesting only — does NOT trade |
 //+------------------------------------------------------------------+
 #property copyright "Broker Data Collector"
-#property version   "1.50"
+#property version   "1.52"
 #property description "Collects broker-specific market data to CSV. No trading."
 
 #define OUTPUT_FOLDER           "BrokerDataCollector"
@@ -13,6 +13,9 @@
 #define COMPETITION_LAB_HEADER  "Timestamp,Open,High,Low,Close,Volume"
 #define SUMMARY_HEADER          "date,broker,server,symbol,timeframe,bars_written,avg_spread,min_spread,max_spread"
 #define MANIFEST_FILE           "manifest.json"
+#define ERR_FILE_CANNOT_OPEN    5004
+#define FILE_OPEN_RETRY_COUNT   3
+#define FILE_OPEN_RETRY_DELAY_MS 100
 
 //--- export format
 enum ENUM_EXPORT_FORMAT
@@ -57,6 +60,176 @@ input ENUM_EXPORT_FORMAT ExportFormat    = EXPORT_RAW;
 string          g_symbols[];
 ENUM_TIMEFRAMES g_timeframes[];
 datetime        g_lastWrittenBarTime[];
+string          g_openFilePaths[];
+
+//+------------------------------------------------------------------+
+//| Full path under terminal MQL5/Files (for diagnostics)            |
+//+------------------------------------------------------------------+
+string BuildFilesFullPath(const string relativePath)
+  {
+   return TerminalInfoString(TERMINAL_DATA_PATH) + "\\MQL5\\Files\\" + relativePath;
+  }
+
+//+------------------------------------------------------------------+
+//| Parent folder from a relative file path                          |
+//+------------------------------------------------------------------+
+string ParentFolderFromFilePath(const string filePath)
+  {
+   int lastSlash = -1;
+   for(int i = StringLen(filePath) - 1; i >= 0; i--)
+     {
+      if(StringGetCharacter(filePath, i) == '\\')
+        {
+         lastSlash = i;
+         break;
+        }
+     }
+
+   if(lastSlash <= 0)
+      return filePath;
+   return StringSubstr(filePath, 0, lastSlash);
+  }
+
+//+------------------------------------------------------------------+
+//| True when this EA already holds an open handle on the path       |
+//+------------------------------------------------------------------+
+bool IsFileLockedByEa(const string filePath)
+  {
+   for(int i = 0; i < ArraySize(g_openFilePaths); i++)
+     {
+      if(g_openFilePaths[i] == filePath)
+         return true;
+     }
+   return false;
+  }
+
+//+------------------------------------------------------------------+
+//| Track an open file path in this EA instance                      |
+//+------------------------------------------------------------------+
+void LockFilePath(const string filePath)
+  {
+   if(IsFileLockedByEa(filePath))
+      return;
+
+   int n = ArraySize(g_openFilePaths);
+   ArrayResize(g_openFilePaths, n + 1);
+   g_openFilePaths[n] = filePath;
+  }
+
+//+------------------------------------------------------------------+
+//| Release tracked open file path                                   |
+//+------------------------------------------------------------------+
+void UnlockFilePath(const string filePath)
+  {
+   for(int i = ArraySize(g_openFilePaths) - 1; i >= 0; i--)
+     {
+      if(g_openFilePaths[i] != filePath)
+         continue;
+
+      for(int j = i; j < ArraySize(g_openFilePaths) - 1; j++)
+         g_openFilePaths[j] = g_openFilePaths[j + 1];
+      ArrayResize(g_openFilePaths, ArraySize(g_openFilePaths) - 1);
+      break;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Ensure parent folder exists immediately before FileOpen          |
+//+------------------------------------------------------------------+
+bool VerifyFolderBeforeFileOpen(const string filePath, const string context)
+  {
+   string folder = ParentFolderFromFilePath(filePath);
+   if(!EnsureFolder(folder))
+     {
+      Print("BrokerDataCollector: ", context,
+            " — parent folder not ready: ", folder,
+            " fullPath=", BuildFilesFullPath(filePath));
+      return false;
+     }
+
+   string search = folder + "\\*";
+   string entryName;
+   long findHandle = FileFindFirst(search, entryName);
+   if(findHandle == INVALID_HANDLE)
+     {
+      Print("BrokerDataCollector: ", context,
+            " — folder exists (empty/new): ", folder,
+            " fullPath=", BuildFilesFullPath(filePath));
+      return true;
+     }
+
+   FileFindClose(findHandle);
+   Print("BrokerDataCollector: ", context,
+         " — folder verified: ", folder,
+         " fullPath=", BuildFilesFullPath(filePath));
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| FileOpen with folder checks, concurrency diagnostics, and retry  |
+//+------------------------------------------------------------------+
+int OpenFileWithRetry(const string filePath, const int flags, const string context)
+  {
+   string fullPath = BuildFilesFullPath(filePath);
+
+   if(IsFileLockedByEa(filePath))
+     {
+      Print("BrokerDataCollector: WARNING possible concurrent access — ",
+            "file already open in this EA: ", fullPath,
+            " context=", context);
+     }
+
+   if(!VerifyFolderBeforeFileOpen(filePath, context))
+      return INVALID_HANDLE;
+
+   for(int attempt = 0; attempt <= FILE_OPEN_RETRY_COUNT; attempt++)
+     {
+      Print("BrokerDataCollector: FileOpen ",
+            (attempt == 0 ? "initial" : StringFormat("retry %d/%d", attempt, FILE_OPEN_RETRY_COUNT)),
+            " fullPath=", fullPath,
+            " flags=", flags,
+            " context=", context);
+
+      ResetLastError();
+      int handle = FileOpen(filePath, flags);
+      int err = GetLastError();
+
+      if(handle != INVALID_HANDLE)
+        {
+         LockFilePath(filePath);
+         return handle;
+        }
+
+      if(err == ERR_FILE_CANNOT_OPEN && attempt < FILE_OPEN_RETRY_COUNT)
+        {
+         Print("BrokerDataCollector: FileOpen error 5004 for ", fullPath,
+               " — waiting ", FILE_OPEN_RETRY_DELAY_MS, " ms before retry ",
+               (attempt + 1), "/", FILE_OPEN_RETRY_COUNT,
+               " context=", context);
+         Sleep(FILE_OPEN_RETRY_DELAY_MS);
+         continue;
+        }
+
+      Print("BrokerDataCollector: FileOpen FINAL FAILURE fullPath=", fullPath,
+            " error=", err,
+            " attempts=", (attempt + 1),
+            " context=", context,
+            " concurrentEaLock=", (IsFileLockedByEa(filePath) ? "yes" : "no"));
+      return INVALID_HANDLE;
+     }
+
+   return INVALID_HANDLE;
+  }
+
+//+------------------------------------------------------------------+
+//| Close handle opened via OpenFileWithRetry                          |
+//+------------------------------------------------------------------+
+void CloseTrackedFile(const string filePath, const int handle)
+  {
+   if(handle != INVALID_HANDLE)
+      FileClose(handle);
+   UnlockFilePath(filePath);
+  }
 
 //+------------------------------------------------------------------+
 //| Expert initialization                                            |
@@ -305,13 +478,9 @@ bool AppendDailySummaryRow(const string symbol,
    string filePath = OUTPUT_FOLDER + "\\" + BuildSummaryFileName();
    bool isNewFile = !FileIsExist(filePath);
 
-   int handle = FileOpen(filePath, FILE_READ | FILE_WRITE | FILE_ANSI);
+   int handle = OpenFileWithRetry(filePath, FILE_READ | FILE_WRITE | FILE_ANSI, "AppendDailySummaryRow");
    if(handle == INVALID_HANDLE)
-     {
-      Print("BrokerDataCollector: summary FileOpen failed for ", filePath,
-            " (error ", GetLastError(), ").");
       return false;
-     }
 
    if(isNewFile)
       FileWriteString(handle, SUMMARY_HEADER + "\r\n");
@@ -341,7 +510,7 @@ bool AppendDailySummaryRow(const string symbol,
 
    FileWriteString(handle, row + "\r\n");
    FileFlush(handle);
-   FileClose(handle);
+   CloseTrackedFile(filePath, handle);
    return true;
   }
 
@@ -413,13 +582,9 @@ bool AppendBarRow(const string symbol,
    string filePath = GetDataOutputFolder() + "\\" + BuildDailyFileName(symbol, tf, bar.time);
 
    bool isNewFile = !FileIsExist(filePath);
-   int handle = FileOpen(filePath, FILE_READ | FILE_WRITE | FILE_ANSI);
+   int handle = OpenFileWithRetry(filePath, FILE_READ | FILE_WRITE | FILE_ANSI, "AppendBarRow");
    if(handle == INVALID_HANDLE)
-     {
-      Print("BrokerDataCollector: FileOpen failed for ", filePath,
-            " (error ", GetLastError(), ").");
       return false;
-     }
 
    if(isNewFile)
       FileWriteString(handle, GetDataCsvHeader() + "\r\n");
@@ -442,7 +607,7 @@ bool AppendBarRow(const string symbol,
 
    FileWriteString(handle, row + "\r\n");
    FileFlush(handle);
-   FileClose(handle);
+   CloseTrackedFile(filePath, handle);
    return true;
   }
 
@@ -690,7 +855,23 @@ bool IsDataHeaderLine(const string line)
   }
 
 //+------------------------------------------------------------------+
+//| Sanitize broker symbol for filesystem-safe CSV filenames only      |
+//| Trading APIs (SymbolSelect, CopyRates, etc.) use the raw symbol. |
+//+------------------------------------------------------------------+
+string SanitizeSymbolForFilename(const string symbol)
+  {
+   string safe = symbol;
+   StringReplace(safe, "#", "_");
+   StringReplace(safe, "/", "_");
+   StringReplace(safe, "\\", "_");
+   StringReplace(safe, ":", "_");
+   StringReplace(safe, " ", "_");
+   return safe;
+  }
+
+//+------------------------------------------------------------------+
 //| Daily CSV filename: SYMBOL_TIMEFRAME_YYYYMMDD.csv                |
+//| SYMBOL segment is sanitized (# / \ : space -> _)                 |
 //+------------------------------------------------------------------+
 string BuildDailyFileName(const string symbol,
                           const ENUM_TIMEFRAMES tf,
@@ -699,7 +880,7 @@ string BuildDailyFileName(const string symbol,
    MqlDateTime dt;
    TimeToStruct(barTime, dt);
    return StringFormat("%s_%s_%04d%02d%02d.csv",
-                       symbol,
+                       SanitizeSymbolForFilename(symbol),
                        TimeframeLabel(tf),
                        dt.year, dt.mon, dt.day);
   }
@@ -738,7 +919,7 @@ datetime ReadLastTimestampFromDailyFile(const string symbol,
    if(!FileIsExist(filePath))
       return 0;
 
-   int handle = FileOpen(filePath, FILE_READ | FILE_ANSI);
+   int handle = OpenFileWithRetry(filePath, FILE_READ | FILE_ANSI, "ReadLastTimestampFromDailyFile");
    if(handle == INVALID_HANDLE)
       return 0;
 
@@ -758,7 +939,7 @@ datetime ReadLastTimestampFromDailyFile(const string symbol,
          lastTime = ts;
      }
 
-   FileClose(handle);
+   CloseTrackedFile(filePath, handle);
    return lastTime;
   }
 
@@ -862,6 +1043,8 @@ string FormatIsoDateFromYmd(const string ymd)
 
 //+------------------------------------------------------------------+
 //| Parse SYMBOL_TIMEFRAME_YYYYMMDD.csv filename                     |
+//| SYMBOL in filename is the sanitized form (see                    |
+//| SanitizeSymbolForFilename).                                      |
 //+------------------------------------------------------------------+
 bool ParseDataFileName(const string filename,
                        string &symbol,
@@ -921,7 +1104,7 @@ bool GetFileRowStats(const string filePath,
    if(!FileIsExist(filePath))
       return false;
 
-   int handle = FileOpen(filePath, FILE_READ | FILE_ANSI);
+   int handle = OpenFileWithRetry(filePath, FILE_READ | FILE_ANSI, "GetFileRowStats");
    if(handle == INVALID_HANDLE)
       return false;
 
@@ -944,7 +1127,7 @@ bool GetFileRowStats(const string filePath,
          lastTs = ts;
      }
 
-   FileClose(handle);
+   CloseTrackedFile(filePath, handle);
    return (rows > 0);
   }
 
@@ -1085,17 +1268,13 @@ bool WriteManifest()
    json += "\n  ]\n}\n";
 
    string filePath = ManifestFilePath();
-   int handle = FileOpen(filePath, FILE_WRITE | FILE_ANSI);
+   int handle = OpenFileWithRetry(filePath, FILE_WRITE | FILE_ANSI, "WriteManifest");
    if(handle == INVALID_HANDLE)
-     {
-      Print("BrokerDataCollector: manifest FileOpen failed for ", filePath,
-            " (error ", GetLastError(), ").");
       return false;
-     }
 
    FileWriteString(handle, json);
    FileFlush(handle);
-   FileClose(handle);
+   CloseTrackedFile(filePath, handle);
    return true;
   }
 

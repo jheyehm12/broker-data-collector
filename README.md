@@ -9,7 +9,7 @@ A broker-universal **MetaTrader 5 Expert Advisor** that records broker-specific 
 - Multi-symbol collection (default: `BTCUSD`, `XAUUSD`, `US100`, `EURUSD`)
 - **Multi-timeframe collection** (default: `M1,M5,M15,H1`) — separate CSV per symbol + timeframe
 - Timer-driven live collection (default: **60 seconds**)
-- One CSV per symbol/timeframe/day: `SYMBOL_TIMEFRAME_YYYYMMDD.csv`
+- One CSV per symbol/timeframe/day: `SYMBOL_TIMEFRAME_YYYYMMDD.csv` (symbol segment sanitized for filenames — see below)
 - Broker metadata on every row: company, server, login, account type
 - Bid, ask, spread, digits, and point at write time
 - Skips duplicate candle timestamps; safe to restart the EA
@@ -54,6 +54,32 @@ Saved to `MQL5/Files/BrokerDataCollector/CompetitionLab/` as `SYMBOL_TIMEFRAME_Y
 | `Volume` | Tick volume (`tick_volume`) |
 
 Only completed candles are exported in both formats.
+
+## Filename symbol sanitization
+
+Broker symbols often include characters that are invalid or awkward in filenames (e.g. `BTCUSD#`, `GOLD#`). The EA keeps the **original symbol** for all market data APIs (`SymbolSelect`, `CopyRates`, `SymbolInfo*`) and for the `symbol` column in Raw CSV rows.
+
+**Filenames only** use a sanitized symbol:
+
+| Character | Replaced with |
+|-----------|----------------|
+| `#` | `_` |
+| `/` | `_` |
+| `\` | `_` |
+| `:` | `_` |
+| space | `_` |
+
+Examples:
+
+| Broker symbol | Filename prefix |
+|---------------|-----------------|
+| `BTCUSD#` | `BTCUSD_` |
+| `GOLD#` | `GOLD_` |
+| `US100Cash#` | `US100Cash_` |
+
+File example: broker symbol `BTCUSD#` on M1 → `BTCUSD_M1_20260702.csv`.
+
+The manifest top-level `symbols` array lists configured **broker** symbols. Each `files[]` entry uses the **sanitized** symbol/filename as on disk.
 
 ## Dataset manifest (`manifest.json`)
 

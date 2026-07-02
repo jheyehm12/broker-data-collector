@@ -4,6 +4,32 @@ All notable changes to Broker Data Collector are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.5.2] - 2026-06-08
+
+### Added
+
+- **Filename symbol sanitization** — broker symbols with `#`, `/`, `\`, `:`, or spaces are sanitized for CSV/manifest filenames only (`#` → `_`, etc.)
+- `SanitizeSymbolForFilename()` — examples: `BTCUSD#` → `BTCUSD_`, `GOLD#` → `GOLD_`, `US100Cash#` → `US100Cash_`
+- Raw symbol unchanged for `SymbolSelect`, `CopyRates`, and CSV row `symbol` column
+
+### Changed
+
+- Daily data files: `SANITIZED_SYMBOL_TIMEFRAME_YYYYMMDD.csv`
+- Manifest `files[].filename` and parsed `files[].symbol` reflect sanitized names; top-level `symbols` array keeps broker symbols
+
+## [1.5.1] - 2026-06-08
+
+### Fixed
+
+- Intermittent `FileOpen` error **5004** (`ERR_FILE_CANNOT_OPEN`) on CompetitionLab and Raw CSV writes
+- All `FileOpen()` calls routed through `OpenFileWithRetry()` with parent-folder verification, full-path logging, and EA-level concurrent-access warnings
+
+### Added
+
+- `OpenFileWithRetry()` — logs full `MQL5/Files` path, verifies folder before open, retries 5004 up to 3 times (100 ms delay), logs final failure
+- `CloseTrackedFile()` — ensures every successful open is paired with `FileClose()` and lock release
+- `BuildFilesFullPath()`, `VerifyFolderBeforeFileOpen()`, in-process open-path tracking for concurrent write diagnostics
+
 ## [1.5.0] - 2026-07-02
 
 ### Added

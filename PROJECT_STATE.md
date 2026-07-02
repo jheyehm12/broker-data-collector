@@ -1,9 +1,9 @@
 # PROJECT_STATE
 
 **Project:** Broker Data Collector  
-**Version:** 1.5.0  
-**Status:** Multi-timeframe + manifest export  
-**Last updated:** 2026-07-02
+**Version:** 1.5.2  
+**Status:** Multi-timeframe + manifest + filename sanitization  
+**Last updated:** 2026-06-08
 
 ## What exists
 
@@ -24,7 +24,8 @@
 - Export formats: `Raw` (broker metadata) or `CompetitionLab` (QCL OHLCV)
 - `manifest.json` for Quant Competition Lab auto-discovery
 - Writes to `MQL5/Files/BrokerDataCollector/`
-- One CSV per symbol/timeframe/calendar day (`SYMBOL_TIMEFRAME_YYYYMMDD.csv`)
+- One CSV per symbol/timeframe/calendar day (`SANITIZED_SYMBOL_TIMEFRAME_YYYYMMDD.csv`)
+- Filename symbol sanitization: `# / \ : space` → `_` (broker symbol unchanged for market APIs and CSV row data)
 - CSV header on new files; duplicate candle timestamps skipped
 - Resume after restart by reading last timestamp from daily files
 - Broker/account metadata attached to every row

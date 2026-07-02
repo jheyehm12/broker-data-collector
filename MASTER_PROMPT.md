@@ -15,7 +15,7 @@ The EA must **never place, modify, or close orders**. No trading logic.
 | Timer interval | 60 seconds |
 | Backfill on attach | Enabled, 5000 closed bars (configurable) |
 | Output folder | `MQL5/Files/BrokerDataCollector/` (Raw) or `.../CompetitionLab/` |
-| File naming | `SYMBOL_TIMEFRAME_YYYYMMDD.csv` (Raw and CompetitionLab) |
+| File naming | `SYMBOL_TIMEFRAME_YYYYMMDD.csv` — **filename** symbol sanitized (`# / \ : space` → `_`); broker symbol unchanged for APIs and CSV data |
 | Export format | `Raw` (default) or `CompetitionLab` |
 
 ## Data contract (CSV columns)
@@ -59,6 +59,7 @@ Completed candles only in both formats.
 5. **Closed bars only** — persist `CopyRates(..., shift=1)` (last completed candle).
 6. **Historical backfill** — on `OnInit`, optionally write up to `BackfillBars` closed candles per symbol into the correct daily CSV files, then continue timer collection.
 7. **Quality summary** — after each symbol backfill, log bars/timestamp/spread stats and append a row to `summary_YYYYMMDD.csv`.
+8. **Filename sanitization** — `SanitizeSymbolForFilename()` for CSV/manifest paths only; keep raw broker symbol for `SymbolSelect`, `CopyRates`, and Raw CSV `symbol` column.
 
 ## Design principles (v1)
 
