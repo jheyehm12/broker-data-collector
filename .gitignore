@@ -1,0 +1,11 @@
+# MetaTrader 5 compiled artifacts
+*.ex5
+
+# Collected data output
+MQL5/Files/BrokerDataCollector/
+*.csv
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
