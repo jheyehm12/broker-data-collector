@@ -4,7 +4,7 @@ Future work for Broker Data Collector. v1 is intentionally minimal.
 
 ## High value
 
-- [ ] **Historical backfill on attach** — optionally seed N days of closed bars when EA starts
+- [x] **Historical backfill on attach** — optionally seed N closed bars when EA starts
 - [ ] **Symbol alias map** — input mapping for broker suffixes (e.g. `BTCUSD` → `BTCUSD.a`)
 - [ ] **Configurable output folder** — input parameter instead of fixed `BrokerDataCollector`
 - [ ] **Forming-bar mode** — optional flag to update the current (unclosed) bar in place
@@ -18,10 +18,9 @@ Future work for Broker Data Collector. v1 is intentionally minimal.
 ## Integration
 
 - [ ] **Quant Competition Lab sample notebook** — documented import + schema validation
+- [x] **Dataset manifest (`manifest.json`)** — auto-discovery index for QCL
 - [ ] **Optional JSON lines export** — parallel format for programmatic pipelines
-- [ ] **Multi-timeframe mode** — collect several TFs per symbol in one run
-
-## Nice to have
+- [x] **Multi-timeframe mode** — collect several TFs per symbol in one run
 
 - [ ] **FILE_COMMON toggle** — share CSV across MT5 data folders on same machine
 - [ ] **Midnight rollover hook** — explicit day-change handling and file rotation log

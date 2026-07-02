@@ -11,12 +11,16 @@ The EA must **never place, modify, or close orders**. No trading logic.
 | Setting | Default |
 |---------|---------|
 | Symbols | `BTCUSD,XAUUSD,US100,EURUSD` (comma-separated input) |
-| Timeframe | M1 |
+| Timeframes | `M1,M5,M15,H1` (comma-separated input) |
 | Timer interval | 60 seconds |
-| Output folder | `MQL5/Files/BrokerDataCollector/` |
-| File naming | One CSV per symbol per day: `SYMBOL_YYYYMMDD.csv` |
+| Backfill on attach | Enabled, 5000 closed bars (configurable) |
+| Output folder | `MQL5/Files/BrokerDataCollector/` (Raw) or `.../CompetitionLab/` |
+| File naming | `SYMBOL_TIMEFRAME_YYYYMMDD.csv` (Raw and CompetitionLab) |
+| Export format | `Raw` (default) or `CompetitionLab` |
 
 ## Data contract (CSV columns)
+
+### Raw
 
 1. `timestamp`
 2. `broker_name`
@@ -31,6 +35,14 @@ The EA must **never place, modify, or close orders**. No trading logic.
 11. `spread_points`, `spread_price`
 12. `digits`, `point`
 
+### CompetitionLab
+
+1. `Timestamp`
+2. `Open`, `High`, `Low`, `Close`
+3. `Volume` (= `tick_volume`)
+
+Completed candles only in both formats.
+
 ## Required MQL5 APIs
 
 - Lifecycle: `OnInit`, `OnTimer`, `OnDeinit`
@@ -43,8 +55,10 @@ The EA must **never place, modify, or close orders**. No trading logic.
 1. **No trading functions** — no `Order*`, `Position*`, `Trade*`, or deal execution.
 2. **Idempotent writes** — skip rows when the same candle timestamp was already saved.
 3. **Header on new files** — write CSV header only when creating a new daily file.
-4. **Resume-safe** — on restart, read today's file and continue without duplicating bars.
+4. **Resume-safe** — on restart, read existing daily files and continue without duplicating bars.
 5. **Closed bars only** — persist `CopyRates(..., shift=1)` (last completed candle).
+6. **Historical backfill** — on `OnInit`, optionally write up to `BackfillBars` closed candles per symbol into the correct daily CSV files, then continue timer collection.
+7. **Quality summary** — after each symbol backfill, log bars/timestamp/spread stats and append a row to `summary_YYYYMMDD.csv`.
 
 ## Design principles (v1)
 
@@ -53,9 +67,8 @@ The EA must **never place, modify, or close orders**. No trading logic.
 - Log actionable errors to the Experts journal.
 - Document install path, CSV location, and Quant Competition Lab import in `README.md`.
 
-## Out of scope (v1)
+## Out of scope (current)
 
-- Historical backfill on attach
 - Tick-level capture
 - Cloud upload / remote sync
 - Multi-terminal coordination
