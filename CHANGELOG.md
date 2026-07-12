@@ -4,6 +4,136 @@ All notable changes to Broker Data Collector are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.8.0] - 2026-07-13
+
+### Added (MyAlert Phase G — ML readiness validator)
+
+- Python package `myalert_validate/` — validates research + outcomes for ML readiness
+- Outputs: `ML_READINESS_REPORT.md`, `validation_report.json`, `eligibility_flags.csv`
+- 17 checks: schema, types, duplicates, timestamp order, missing/invalid values, leakage, balance, variance, correlation, split readiness, timezone, incomplete outcomes, sample size
+- PASS / WARNING / FAIL per check; weighted overall readiness score (0–100)
+- Per-row `Eligible For Training` flags without modifying source CSVs
+- ML recommendations: feature list, exclusions, targets, chronological split, baseline models
+- CLI: `python -m myalert_validate` / `myalert-validate`
+- Unit tests: `tests/test_myalert_validate.py` (4 tests)
+- Default config: `myalert_validate/default_config.json`
+
+### Safety
+
+- No EA changes; no source CSV modification; no imputation; no random train/test split
+- Decision-time and outcome data remain in separate files
+
+## [1.7.0] - 2026-07-13
+
+### Added (MyAlert Phase F — separate post-processor)
+
+- Python package `myalert_enrich/` — outcome enrichment utility (does **not** modify EA or research CSV)
+- Inputs: MyAlert research CSV + Raw OHLC folder + JSON config (TP/SL model, forward horizon)
+- Outputs: `MyAlert/Enriched/MyAlert_*_Outcomes.csv` linked by `Symbol`, `Timeframe`, `Timestamp`
+- Outcome fields: First Reaction, MFE, MAE, TP Hit, SL Hit, hit times, Outcome (WIN/LOSS/BOTH/NONE), Bars To Outcome, Final Forward Return
+- Configurable TP/SL models: `atr_multiple`, `fixed_pct`, `fixed_price`
+- Same-candle policies: `both`, `loss_first`, `tp_first`
+- Enrichment status codes for row matching, missing OHLC, insufficient forward bars, neutral direction
+- Unit tests: `tests/test_myalert_enrich.py` (12 tests)
+- `pyproject.toml` with `myalert-enrich` CLI entry point
+
+### Documented
+
+- Phase F usage, schema, event-order logic, and validation in `README.md`
+- Default config: `myalert_enrich/default_config.json`
+
+### Safety
+
+- Decision-time research CSV preserved unchanged — no future leakage into EA features
+- Forward paths built only from Raw OHLC bars after decision timestamp
+
+## [1.6.0] - 2026-07-13
+
+### Added (MyAlert Phase E)
+
+- **Market structure (cols 45–53):** Swing High, Swing Low, HH, HL, LH, LL, Trend Bias, Breakout State, Retest State
+- Swing pivots: left/right = 5 (MyAlert `pivotLen`); confirmed after 5 bars without future leakage
+- Trend bias: MyAlert struct short/long = 10/25 (bullish/bearish/neutral codes `1`/`-1`/`0`)
+- BOS breakout/retest simulation: `bosPivotLen=3`, `breakoutLookback=10`, `retestWindow=6`
+- `MYALERT_LOOKBACK_BARS` increased from 35 → **80** for structure history
+- `MYALERT_MIN_HISTORY_BARS` = 36 for Phase E gate
+
+### Documented
+
+- Swing confirmation rules, structure flag formulas, trend/breakout/retest code tables in `README.md`
+- Partial-history behavior: Phase E empty when `< 36` bars lookback; Phase D empty when `< 20`
+- Performance impact of 80-bar lookback + BOS simulation
+
+### Changed
+
+- `#property version` → `1.60`
+- MyAlert research CSV fully populated (59 columns) when history permits
+
+### Safety
+
+- Phase E logic only when `EnableMyAlertResearchFeatures = true`
+- Closed candles only; no future leakage
+- Raw/CompetitionLab exports unchanged when flag is off
+
+## [1.5.9] - 2026-07-13
+
+### Added (MyAlert Phase D)
+
+- **Structure (cols 17–24):** Direction, Body Size, Range Size, wicks, body/wick ratios
+- **Relative (cols 25–30):** Average Body 5/10/20, Current Body Ratio, ATR14 (SMA), Range-to-ATR
+- **Sequence (cols 31–44):** Previous Direction 1–5, Previous Body Ratio 1–5, Consecutive Bullish/Bearish, Body/Range Expansion ratios
+- **MyAlert raw inputs (cols 54–59):** Previous Body, Average Body, Previous Body Ratio, Follow Through, Distance Ratio, Body Strength
+- `MYALERT_LOOKBACK_BARS` (35) for timer `CopyRates`; backfill copies extra lookback bars without writing them
+- Helpers: `SafeDiv`, `GetBarBodySize`, `CalcAtrSma`, `CalcAverageBody`, `CountConsecutiveDirection`, `CalcFollowThrough`, `CalcMyAlertBodyStrengthCode`
+
+### Documented
+
+- All Phase D formulas in `README.md` (structure, relative, sequence, MyAlert raw, expansion classification)
+- Insufficient-history placeholder rows (43 empty Phase D+ fields when `barIdx + 20 >= barsCount`)
+- Duplicate/timestamp alignment validation vs main Raw CSV
+- Performance impact: extra `CopyRates(35)` per stream per timer tick when enabled
+
+### Changed
+
+- MyAlert research schema: **59 columns** (was 58); cols 45–53 reserved for Phase E
+- `#property version` → `1.59`
+
+### Safety
+
+- Phase D logic runs only when `EnableMyAlertResearchFeatures = true`
+- Closed candles only (`CopyRates` shift = 1); no future leakage
+- Raw/CompetitionLab exports unchanged when flag is off
+
+## [1.5.8] - 2026-07-13
+
+### Added (MyAlert Phase C)
+
+- Timing fields: Timestamp, UTC Timestamp, Broker Timestamp, Symbol, Timeframe, Asset Class, Session, Day of Week, Hour UTC
+- Raw candle fields: Open, High, Low, Close, Tick Volume, Real Volume, Spread (points at write time)
+- `BarTimeToUtc()`, `ClassifySessionUtc()`, `ClassifyAssetClass()`, `DayOfWeekLabel()`
+- Columns 17–58 remain empty (deferred to Phase D+)
+
+### Documented
+
+- UTC conversion: `UTC = bar.time - (TimeCurrent() - TimeGMT())`
+- Session mapping by UTC hour (priority: Overlap → London → New York → Asia)
+- Asset class heuristics from symbol name + `SYMBOL_TRADE_CALC_MODE`
+
+## [1.5.7] - 2026-07-13
+
+### Added
+
+- `EnableMyAlertResearchFeatures` input (default **false**) — optional MyAlert research CSV export
+- Separate MyAlert research file per symbol/timeframe: `BrokerDataCollector/MyAlert/MyAlert_SYMBOL_TIMEFRAME_Research.csv`
+- Full 58-column research schema header (features populated in later phases)
+- Phase B skeleton rows: `Timestamp` only; all feature columns empty until Phase C+
+- Independent duplicate tracking via `g_lastMyAlertWrittenBarTime[]`
+- MyAlert files excluded from `manifest.json` disk scan
+
+### Safety
+
+- When `EnableMyAlertResearchFeatures = false`, existing Raw/CompetitionLab exports and behavior are unchanged
+
 ## [1.5.5] - 2026-06-08
 
 ### Added

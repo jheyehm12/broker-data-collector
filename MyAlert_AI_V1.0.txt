@@ -1,0 +1,2418 @@
+//@version=6
+indicator("MyAlert_AI_V1.0", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=100)
+
+// Signals (Main)
+showSimpleEngulfing       = input.bool(false, "Show Simple Engulfing", group="Signals (Main)")
+showConsecutiveArrows     = input.bool(true, "Show Consecutive Arrows", group="Signals (Main)")
+confirmOnClose            = input.bool(true, "Confirm Signals On Close", group="Signals (Main)")
+
+// Quality Filters
+useQualityFilter          = input.bool(true, "Use Quality Filter", group="Quality Filters")
+emaLenQuality             = input.int(200, "Quality EMA Length", minval=1, group="Quality Filters")
+qualityEMASource          = input.string("Trend EMA (ema variable)", "Quality EMA Source", options=["Quality EMA (emaLenQuality)", "Trend EMA (ema variable)"], group="Quality Filters")
+minBarsBetweenSignals     = input.int(25, "Min Bars Between Signals", minval=1, group="Quality Filters")
+
+// CANDLESTICK PATTERNS
+showHammer                = input.bool(false, "Show Hammer", group="Reversal Patterns")
+showShootingStar          = input.bool(false, "Show Shooting Star", group="Reversal Patterns")
+showMorningStar           = input.bool(false, "Show Morning Star", group="Reversal Patterns")
+showEveningStar           = input.bool(false, "Show Evening Star", group="Reversal Patterns")
+filterReversalsByZone     = input.bool(true, "Filter Reversals by Zone", group="Reversal Patterns")
+
+showInsideBarBull         = input.bool(false, "Show Inside Bar (Bullish)", group="Continuation Patterns")
+showInsideBarBear         = input.bool(false, "Show Inside Bar (Bearish)", group="Continuation Patterns")
+showRisingThreeMethods    = input.bool(false, "Show Rising Three Methods", group="Continuation Patterns")
+showFallingThreeMethods   = input.bool(false, "Show Falling Three Methods", group="Continuation Patterns")
+filterContinuationsByTrend = input.bool(true, "Filter Continuations by Trend", group="Continuation Patterns")
+continuationEMALen        = input.int(200, "Continuation Trend EMA Length", minval=1, group="Continuation Patterns")
+
+// SUPPLY / DEMAND ZONES
+pivotLen              = input.int(5, "Pivot Length (Zones)", minval=1, maxval=50, group="Supply & Demand Zones")
+atrLen                = input.int(14, "ATR Length (Zones)", group="Supply & Demand Zones")
+zoneATRMult           = input.float(1.0, "Zone Thickness (ATR Mult)", minval=0.1, group="Supply & Demand Zones")
+zoneLookbackBars      = input.int(1200, "Zone Lookback Bars", minval=100, group="Supply & Demand Zones")
+
+maxSupplyZones        = input.int(8, "Max Supply Zones", minval=1, maxval=50, group="Supply & Demand Zones")
+maxDemandZones        = input.int(8, "Max Demand Zones", minval=1, maxval=50, group="Supply & Demand Zones")
+
+useRangeStrength      = input.bool(true, "Strong Zone: Range", group="Zone Strength")
+atrMultStrong         = input.float(1.4, "Strong if Range > ATR×", minval=0.1, group="Zone Strength")
+
+useVolumeStrength     = input.bool(true, "Strong Zone: Volume", group="Zone Strength")
+volLen                = input.int(20, "Volume SMA Length", minval=1, group="Zone Strength")
+volMultStrong         = input.float(1.8, "Strong if Volume > SMA×", minval=0.1, group="Zone Strength")
+
+deleteBrokenZones     = input.bool(true, "Delete Broken Zones", group="Zone Management")
+zoneTouchMode         = input.string("Close", "Zone Touch Mode (Signals)", options=["Close","Wick"], group="Zone Management")
+allowNormalZones      = input.bool(false, "Allow Normal Zones", group="Zone Management")
+allowStrongZones      = input.bool(true, "Allow Strong Zones", group="Zone Management")
+allowHotZones         = input.bool(true, "Allow Hot Zones", group="Zone Management")
+
+// TP/SL MANAGEMENT
+enableTPSL            = input.bool(true, "Enable TP/SL Drawing", group="TP/SL Management")
+tpSlBufferPips        = input.float(0.0, "TP/SL Buffer (pips)", minval=0.0, step=0.1, group="TP/SL Management")
+tpSlMaxBars           = input.int(20, "TP/SL Max Horizontal Size (bars)", minval=1, group="TP/SL Management")
+cryptoAtrSlMult       = input.float(0.5, "Crypto ATR SL Multiplier", minval=0.1, step=0.05, group="TP/SL Management")
+maxHistoricalSetups   = input.int(100, "Max Historical TP/SL Setups", minval=1, maxval=500, group="TP/SL Management")
+showTP1               = input.bool(true, "Show TP1 Line", group="TP/SL Management")
+showTP2               = input.bool(true, "Show TP2 Line", group="TP/SL Management")
+showTPSLLabels        = input.bool(true, "Show TP/SL Labels", group="TP/SL Management")
+
+// INVALIDATION (DELETE SIGNALS)
+invalidationBars      = input.int(5, "Invalidation Window (bars)", minval=1, group="Invalidations")
+invalidateOnConfirmedClose = input.bool(true, "Invalidate Only On Confirmed Close", group="Invalidations")
+// Invalidation disabled — AI handles post-alert decision logic (Phase 5+)
+bool enableInvalidation = false
+
+// ENTRY CONFIRMATION
+enableEntryConfirmation = input.bool(true, "Enable Entry Confirmation", group="Entry Confirmation")
+testMode = input.bool(false, "TEST MODE (Webhook Testing Only)", group="Entry Confirmation")
+testScenario = input.string("TAKE_BUY", "TEST SCENARIO", options=["TAKE_BUY","TAKE_SELL","WAIT_BUY","WAIT_SELL","SKIP_BUY","SKIP_SELL"], group="Entry Confirmation")
+
+// Advanced (Tuning)
+arrowDistanceMultiplier   = input.float(1.0, "Arrow Distance Multiplier", minval=0.1, step=0.1, group="Advanced (Tuning)")
+consecutiveArrowColor     = input.color(color.orange, "Consecutive Arrow Color", group="Advanced (Tuning)")
+minConsecutiveCandles     = input.int(2, "Min Consecutive Candles", minval=1, maxval=50, group="Advanced (Tuning)")
+useFlexibleEngulfing      = input.bool(true, "Use Flexible Engulfing", group="Advanced (Tuning)")
+engulfingThreshold        = input.float(0.9, "Engulfing Threshold", minval=0.0, maxval=1.0, step=0.05, group="Advanced (Tuning)")
+
+filterMode            = input.string("EMA + Structure", "Trade Filter Mode", options=["None","EMA Trend","Market Structure","RSI Momentum","EMA + RSI","EMA + Structure"], group="Advanced (Tuning)")
+presetMode            = input.string("Auto (Forex)", "Auto Preset (Forex)", options=["Auto (Forex)","Manual"], group="Advanced (Tuning)")
+emaLenManual          = input.int(50, "EMA Length (Manual)", minval=1, group="Advanced (Tuning)")
+rsiLenManual          = input.int(14, "RSI Length (Manual)", minval=1, group="Advanced (Tuning)")
+rsiMid                = input.float(50.0, "RSI Midline", minval=1, maxval=99, step=0.5, group="Advanced (Tuning)")
+structShortManual     = input.int(10, "Structure Short Lookback (Manual)", minval=2, group="Advanced (Tuning)")
+structLongManual      = input.int(20, "Structure Long Lookback (Manual)", minval=3, group="Advanced (Tuning)")
+showEMA               = input.bool(true, "Plot EMA (when used)", group="Advanced (Tuning)")
+
+
+// Blockers (Quality)
+enableBlockers        = input.bool(false, "Enable Blockers", group="Blockers (Quality)")
+useSpaceBlocker       = input.bool(true, "Use Space Blocker", group="Blockers (Quality)")
+useSlopeBlocker       = input.bool(true, "Use Slope Blocker", group="Blockers (Quality)")
+useStructureBlocker  = input.bool(false, "Use Structure Blocker", group="Blockers (Quality)")
+useImpulseBlocker    = input.bool(true, "Use Impulse Blocker", group="Blockers (Quality)")
+spaceATRLen           = input.int(14, "Space ATR Length", minval=1, group="Blockers (Quality)")
+minSpaceATR           = input.float(1.0, "Min Space (ATR Mult)", minval=0.1, step=0.1, group="Blockers (Quality)")
+emaSlopeLen           = input.int(50, "EMA Slope Length", minval=1, group="Blockers (Quality)")
+minEmaSlopeATR        = input.float(0.05, "Min EMA Slope (ATR)", minval=0.0, step=0.01, group="Blockers (Quality)")
+structLookback        = input.int(20, "Structure Lookback", minval=2, group="Blockers (Quality)")
+impulseRangeLookback  = input.int(20, "Impulse Range Lookback", minval=2, group="Blockers (Quality)")
+maxEntryPctIntoImpulse = input.float(0.70, "Max Entry % Into Impulse", minval=0.1, maxval=0.95, step=0.05, group="Blockers (Quality)")
+showBlockerDebug      = input.bool(false, "Show Blocker Debug", group="Blockers (Quality)")
+
+// Context Blockers
+enableContextBlockers = input.bool(true, "Enable Context Blockers", group="Context Blockers")
+useEMASlopeBlocker    = input.bool(true, "Use EMA Slope Blocker", group="Context Blockers")
+emaSlopeLenContext    = input.int(20, "EMA Slope Length", minval=1, group="Context Blockers")
+minEMASlopeATR        = input.float(0.08, "Min EMA Slope (ATR)", minval=0.0, step=0.01, group="Context Blockers")
+useATRBodyBlocker     = input.bool(true, "Use ATR Body Blocker", group="Context Blockers")
+minBodyATR            = input.float(0.35, "Min Body (ATR Mult)", minval=0.0, step=0.05, group="Context Blockers")
+useLateEntryBlocker   = input.bool(true, "Use Late Entry Blocker", group="Context Blockers")
+lateEntryLookback     = input.int(3, "Late Entry Lookback", minval=1, group="Context Blockers")
+maxSameColorBeforeEntry = input.int(2, "Max Same Color Before Entry", minval=0, group="Context Blockers")
+useProximityToEMA     = input.bool(true, "Use Proximity To EMA", group="Context Blockers")
+emaProxATR            = input.float(0.6, "EMA Proximity (ATR Mult)", minval=0.1, step=0.1, group="Context Blockers")
+useRecentBreakoutConfirm = input.bool(false, "Use Recent Breakout Confirm", group="Context Blockers")
+breakoutLookback      = input.int(10, "Breakout Lookback", minval=1, group="Context Blockers")
+breakoutATR           = input.float(0.5, "Breakout ATR Mult", minval=0.1, step=0.1, group="Context Blockers")
+showContextBlockerDebug = input.bool(false, "Show Context Blocker Debug", group="Context Blockers")
+
+// Execution Signals
+enableExecutionSignals = input.bool(true, "Enable Execution Signals", group="Execution Signals")
+executionConfirmOnClose = input.bool(true, "Confirm Execution On Close", group="Execution Signals")
+showExecutionLabels = input.bool(true, "Show Execution Labels", group="Execution Signals")
+showExecutionDebug = input.bool(false, "Show Execution Debug Markers", group="Execution Signals")
+showExecutionScoreDebug = input.bool(false, "Show Execution Score Debug", group="Execution Signals")
+
+// Execution HTF Bias
+useHTFBiasFilter = input.bool(true, "Use HTF Bias Filter", group="Execution HTF Bias")
+htfBiasTimeframe = input.timeframe("60", "HTF Bias Timeframe", group="Execution HTF Bias")
+htfBiasEMALen = input.int(50, "HTF Bias EMA Length", minval=1, group="Execution HTF Bias")
+htfBiasShortLookback = input.int(5, "HTF Structure Short Lookback", minval=2, group="Execution HTF Bias")
+htfBiasLongLookback = input.int(20, "HTF Structure Long Lookback", minval=3, group="Execution HTF Bias")
+
+// Execution Candle Filter
+useExecutionCandleFilter = input.bool(true, "Use Strong Candle Filter", group="Execution Candle Filter")
+execCandleATRMult = input.float(0.5, "Min Body vs ATR", minval=0.0, step=0.05, group="Execution Candle Filter")
+execCloseNearExtreme = input.float(0.25, "Max Close Distance From Extreme (% Range)", minval=0.0, maxval=0.5, step=0.05, group="Execution Candle Filter")
+execMaxOpposingWickBody = input.float(0.6, "Max Opposing Wick vs Body", minval=0.0, step=0.1, group="Execution Candle Filter")
+
+// Execution BOS / Retest
+useExecutionBOS = input.bool(false, "Require BOS Confirmation", group="Execution BOS")
+bosPivotLen = input.int(3, "BOS Pivot Length", minval=1, group="Execution BOS")
+bosBreakMode = input.string("Close", "BOS Break Mode", options=["Close","Wick"], group="Execution BOS")
+useExecutionRetest = input.bool(false, "Require BOS Retest", group="Execution BOS")
+retestBarsWindow = input.int(6, "Retest Window (bars)", minval=1, group="Execution BOS")
+
+// Execution Space Filter
+useExecutionSpaceFilter = input.bool(true, "Use Space-To-Target Filter", group="Execution Space")
+executionMinSpaceATR = input.float(1.2, "Min Space ATR Mult", minval=0.0, step=0.1, group="Execution Space")
+executionMinSpaceRR = input.float(1.5, "Min Space Risk-Reward", minval=0.0, step=0.1, group="Execution Space")
+
+// Execution Late Entry
+useExecutionLateEntryFilter = input.bool(true, "Use Late Entry Filter", group="Execution Late Entry")
+executionLateFromEMAATR = input.float(1.0, "Max Distance From EMA (ATR)", minval=0.0, step=0.1, group="Execution Late Entry")
+executionLateFromZoneATR = input.float(1.2, "Max Distance From Zone Origin (ATR)", minval=0.0, step=0.1, group="Execution Late Entry")
+executionLateImpulsePct = input.float(0.75, "Max Progress Into Impulse", minval=0.1, maxval=0.99, step=0.05, group="Execution Late Entry")
+
+// Execution Scoring
+useExecutionScoring = input.bool(false, "Use Confluence Scoring", group="Execution Scoring")
+executionMinScore = input.int(5, "Minimum Execution Score", minval=1, group="Execution Scoring")
+scoreHTF = input.int(1, "Score: HTF Bias", minval=0, group="Execution Scoring")
+scoreZone = input.int(1, "Score: Zone Alignment", minval=0, group="Execution Scoring")
+scoreStructure = input.int(1, "Score: Structure Alignment", minval=0, group="Execution Scoring")
+scoreCandle = input.int(1, "Score: Strong Candle", minval=0, group="Execution Scoring")
+scoreSpace = input.int(1, "Score: Space", minval=0, group="Execution Scoring")
+scoreLate = input.int(1, "Score: Late Entry OK", minval=0, group="Execution Scoring")
+scoreBOS = input.int(1, "Score: BOS", minval=0, group="Execution Scoring")
+scoreRetest = input.int(1, "Score: Retest", minval=0, group="Execution Scoring")
+
+// Sniper Signals
+enableSniperSignals = input.bool(true, "Enable Sniper Signals", group="Sniper Signals")
+showSniperLabels = input.bool(false, "Show Sniper Labels", group="Sniper Signals")
+showSniperDebug = input.bool(false, "Show Sniper Debug", group="Sniper Signals")
+
+// Sniper BOS
+// Strict defaults bias sniper entries toward confirmed structure shifts instead of first touch breaks.
+enableSniperBOS = input.bool(true, "Use Sniper BOS", group="Sniper BOS")
+sniperBosLookback = input.int(4, "Sniper BOS Pivot Length", minval=2, group="Sniper BOS")
+sniperBosBreakMode = input.string("Close", "Sniper BOS Break Mode", options=["Close","Wick"], group="Sniper BOS")
+sniperRequireStructureShiftBeforeBOS = input.bool(true, "Require Structure Shift Before BOS", group="Sniper BOS")
+
+// Sniper Range Filter
+// Strict defaults aggressively block chop so sniper mode stays selective.
+enableRangeFilter = input.bool(true, "Enable Range Filter", group="Sniper Range Filter")
+rangeLookback = input.int(12, "Range Lookback", minval=5, group="Sniper Range Filter")
+minRangeATR = input.float(3.2, "Min Range (ATR)", minval=0.5, step=0.1, group="Sniper Range Filter")
+maxAlternatingCandles = input.int(5, "Max Alternating Candles", minval=0, group="Sniper Range Filter")
+minDirectionalProgressATR = input.float(1.8, "Min Directional Progress (ATR)", minval=0.1, step=0.1, group="Sniper Range Filter")
+maxOverlapPct = input.float(0.65, "Max Overlap %", minval=0.1, maxval=1.0, step=0.05, group="Sniper Range Filter")
+rangeSlopeATR = input.float(0.8, "Min EMA Progress (ATR)", minval=0.0, step=0.05, group="Sniper Range Filter")
+
+// Sniper Zone Filter
+// Strict defaults prefer clean first reactions very near the zone origin.
+enableStrictZoneEnforcement = input.bool(true, "Enable Strict Zone Enforcement", group="Sniper Zone Filter")
+maxDistanceFromZoneATR = input.float(0.35, "Max Distance From Zone (ATR)", minval=0.0, step=0.05, group="Sniper Zone Filter")
+preferFreshZones = input.bool(true, "Prefer Fresh Zones", group="Sniper Zone Filter")
+maxZoneTouches = input.int(1, "Max Zone Touches", minval=1, group="Sniper Zone Filter")
+
+// Sniper Candle Filter
+// Strict defaults require decisive trigger candles rather than soft continuation bars.
+enableSniperCandleFilter = input.bool(true, "Enable Sniper Candle Filter", group="Sniper Candle Filter")
+sniperMinBodyATR = input.float(0.7, "Min Body (ATR)", minval=0.1, step=0.05, group="Sniper Candle Filter")
+sniperMaxOpposingWickPct = input.float(0.4, "Max Opposing Wick vs Body", minval=0.0, step=0.05, group="Sniper Candle Filter")
+sniperCloseNearExtremePct = input.float(0.15, "Max Close Distance From Extreme (% Range)", minval=0.0, maxval=0.5, step=0.05, group="Sniper Candle Filter")
+sniperRequireMinorBreak = input.bool(true, "Require Minor Break", group="Sniper Candle Filter")
+
+// Sniper Late Entry
+// Conservative defaults avoid chasing extended post-break candles.
+enableSniperLateEntryFilter = input.bool(true, "Enable Sniper Late Entry Filter", group="Sniper Late Entry")
+sniperMaxDistFromEMAATR = input.float(0.8, "Max Distance From EMA (ATR)", minval=0.0, step=0.05, group="Sniper Late Entry")
+sniperMaxDistFromZoneATR = input.float(0.9, "Max Distance From Zone (ATR)", minval=0.0, step=0.05, group="Sniper Late Entry")
+sniperMaxImpulsePct = input.float(0.6, "Max Impulse Progress", minval=0.1, maxval=0.95, step=0.05, group="Sniper Late Entry")
+sniperMaxSameColorCandles = input.int(1, "Max Same-Color Candles Before Signal", minval=0, group="Sniper Late Entry")
+sniperMaxPostBosTravelATR = input.float(0.8, "Max Post-BOS Travel (ATR)", minval=0.0, step=0.05, group="Sniper Late Entry")
+
+// Sniper Space Filter
+// Strict defaults demand more reward room than the execution layer.
+enableSniperSpaceFilter = input.bool(true, "Enable Sniper Space Filter", group="Sniper Space Filter")
+sniperMinSpaceATR = input.float(2.0, "Min Space (ATR)", minval=0.1, step=0.1, group="Sniper Space Filter")
+sniperMinSpaceRR = input.float(2.0, "Min Space (RR)", minval=0.1, step=0.1, group="Sniper Space Filter")
+sniperRequireBothSpaceChecks = input.bool(true, "Require Both Space Checks", group="Sniper Space Filter")
+
+// Sniper Retest
+// Default retest mode is enabled to keep sniper entries focused on confirmed break-and-reclaim structure.
+enableSniperRetest = input.bool(true, "Enable Sniper Retest", group="Sniper Retest")
+sniperRetestWindow = input.int(6, "Sniper Retest Window", minval=1, group="Sniper Retest")
+sniperRetestToleranceATR = input.float(0.2, "Sniper Retest Tolerance (ATR)", minval=0.0, step=0.05, group="Sniper Retest")
+sniperRetestRequireTriggerCandle = input.bool(true, "Require Trigger Candle After Retest", group="Sniper Retest")
+
+// Sniper Scoring
+// High-quality defaults keep scoring as an extra confluence gate after all hard blockers pass.
+enableSniperScoring = input.bool(true, "Enable Sniper Scoring", group="Sniper Scoring")
+sniperMinScore = input.int(10, "Minimum Sniper Score", minval=1, group="Sniper Scoring")
+sniperScoreHTF = input.int(1, "Score: HTF Bias", minval=0, group="Sniper Scoring")
+sniperScoreZone = input.int(2, "Score: Zone Quality", minval=0, group="Sniper Scoring")
+sniperScoreStructure = input.int(1, "Score: Structure", minval=0, group="Sniper Scoring")
+sniperScoreBOS = input.int(2, "Score: BOS", minval=0, group="Sniper Scoring")
+sniperScoreRetest = input.int(1, "Score: Retest", minval=0, group="Sniper Scoring")
+sniperScoreCandle = input.int(2, "Score: Trigger Candle", minval=0, group="Sniper Scoring")
+sniperScoreSpace = input.int(2, "Score: Space", minval=0, group="Sniper Scoring")
+sniperScoreLate = input.int(2, "Score: Late Entry OK", minval=0, group="Sniper Scoring")
+sniperScoreRange = input.int(2, "Score: Not Range", minval=0, group="Sniper Scoring")
+sniperScoreFreshZone = input.int(1, "Score: Fresh Zone", minval=0, group="Sniper Scoring")
+
+//-------------------------
+// Timeframe-based distance (MT5 CalculateArrowDistance())
+// baseDistance = 20 points, then timeframeMultiplier, then ArrowDistanceMultiplier, then _Point
+// In TradingView: _Point ~ syminfo.mintick
+//-------------------------
+f_tfMultiplier() =>
+    // MT5 mapping:
+    // M1=0.5, M5=1.0, M15=1.5, M30=2.0, H1=3.0, H4=5.0, D1=8.0, W1=15.0, MN1=25.0, default=2.0
+    float mult = 2.0
+    int tfSeconds = timeframe.in_seconds()
+    if tfSeconds < 3600  // Minutes
+        if tfSeconds == 60
+            mult := 0.5
+        else if tfSeconds == 300
+            mult := 1.0
+        else if tfSeconds == 900
+            mult := 1.5
+        else if tfSeconds == 1800
+            mult := 2.0
+        else
+            mult := 2.0
+    else if tfSeconds < 86400  // Hours
+        if tfSeconds == 3600
+            mult := 3.0
+        else if tfSeconds == 14400
+            mult := 5.0
+        else
+            mult := 2.0
+    else if tfSeconds == 86400  // Daily
+        mult := 8.0
+    else if tfSeconds == 604800  // Weekly
+        mult := 15.0
+    else if tfSeconds >= 2592000  // Monthly (approximately)
+        mult := 25.0
+    else
+        mult := 2.0
+    mult
+
+atrForArrow = ta.atr(14)
+atrForTPSL = ta.atr(14)
+arrowDistance = math.max(atrForArrow * 0.3 * arrowDistanceMultiplier, syminfo.mintick * 5.0)
+
+//-------------------------
+// Helpers
+//-------------------------
+f_roundToTick(price) =>
+    syminfo.mintick > 0 ? math.round(price / syminfo.mintick) * syminfo.mintick : price
+
+f_getSpreadPrice() =>
+    float liveSpread = not na(ask) and not na(bid) and ask >= bid ? (ask - bid) : syminfo.mintick
+    float contractValuePerTick = syminfo.mintick * syminfo.pointvalue
+    bool hasValidTickValue = contractValuePerTick > 0
+    hasValidTickValue ? math.max(liveSpread, syminfo.mintick) : syminfo.mintick
+
+f_consecutiveBearish(n) =>
+    bool ok = true
+    for i = 1 to n
+        ok := ok and (close[i] < open[i])
+    ok
+
+f_consecutiveBullish(n) =>
+    bool ok = true
+    for i = 1 to n
+        ok := ok and (close[i] > open[i])
+    ok
+
+f_bullishEngulfingFlexible() =>
+    // matches MT5 IsBullishEngulfing()
+    if bar_index < minConsecutiveCandles
+        false
+    else
+        bool consecutiveBear = f_consecutiveBearish(minConsecutiveCandles)
+        bool currentBull     = close > open
+        if not (consecutiveBear and currentBull)
+            false
+        else
+            bool engulfs = false
+            if useFlexibleEngulfing
+                float prevSize = math.abs(close[1] - open[1])
+                float curSize  = math.abs(close - open)
+                float coverage = (open < close[1] and close > open[1] and prevSize != 0.0) ? math.min(curSize, prevSize) / prevSize : 0.0
+                engulfs := coverage >= engulfingThreshold
+            else
+                engulfs := (open < close[1]) and (close > open[1])
+            engulfs
+
+f_bearishEngulfingFlexible() =>
+    // matches MT5 IsBearishEngulfing()
+    if bar_index < minConsecutiveCandles
+        false
+    else
+        bool consecutiveBull = f_consecutiveBullish(minConsecutiveCandles)
+        bool currentBear     = close < open
+        if not (consecutiveBull and currentBear)
+            false
+        else
+            bool engulfs = false
+            if useFlexibleEngulfing
+                float prevSize = math.abs(close[1] - open[1])
+                float curSize  = math.abs(close - open)
+                float coverage = (open > close[1] and close < open[1] and prevSize != 0.0) ? math.min(curSize, prevSize) / prevSize : 0.0
+                engulfs := coverage >= engulfingThreshold
+            else
+                engulfs := (open > close[1]) and (close < open[1])
+            engulfs
+
+f_simpleBullishEngulfing() =>
+    // matches MT5 IsSimpleBullishEngulfing()
+    bar_index >= 1 and (close[1] < open[1]) and (close > open) and (open < close[1]) and (close > open[1])
+
+f_simpleBearishEngulfing() =>
+    // matches MT5 IsSimpleBearishEngulfing()
+    bar_index >= 1 and (close[1] > open[1]) and (close < open) and (open > close[1]) and (close < open[1])
+
+//-------------------------
+// Execution Helpers
+//-------------------------
+f_safeDiv(num, den) =>
+    den != 0.0 ? num / den : 0.0
+
+f_joinReason(existing, reason) =>
+    existing == "" ? reason : existing + "|" + reason
+
+f_buildSetupAlertJson(string signal, string trendBias, string bodyStrength, string breakoutState, string retestState) =>
+    "{\"signal\":\"" + signal + "\",\"layer\":\"setup\",\"symbol\":\"" + syminfo.ticker + "\",\"timeframe\":\"" + timeframe.period + "\",\"price\":\"" + str.tostring(close, format.mintick) + "\",\"timestamp\":\"" + str.tostring(time) + "\",\"source\":\"MyAlert_AI_V1.0\",\"trend_bias\":\"" + trendBias + "\",\"setup_type\":\"ALERT\",\"body_strength\":\"" + bodyStrength + "\",\"breakout_state\":\"" + breakoutState + "\",\"retest_state\":\"" + retestState + "\"}"
+
+// Lightweight indecision filter for same-bar or next-bar READY confirmation.
+f_entryConfirmBullCandle() =>
+    float candleRange = high - low
+    float candleBody = math.abs(close - open)
+    bool rangeValid = candleRange > 0
+    bool decisiveBody = rangeValid and f_safeDiv(candleBody, candleRange) >= 0.3
+    close > open and decisiveBody
+
+f_entryConfirmBearCandle() =>
+    float candleRange = high - low
+    float candleBody = math.abs(close - open)
+    bool rangeValid = candleRange > 0
+    bool decisiveBody = rangeValid and f_safeDiv(candleBody, candleRange) >= 0.3
+    close < open and decisiveBody
+
+f_strongBullCandle(atrValue) =>
+    float candleRange = high - low
+    float candleBody = math.abs(close - open)
+    float upperWick = high - math.max(close, open)
+    bool rangeValid = candleRange > 0
+    bool nearHigh = rangeValid and f_safeDiv(high - close, candleRange) <= execCloseNearExtreme
+    bool wickOK = candleBody > 0 and f_safeDiv(upperWick, candleBody) <= execMaxOpposingWickBody
+    close > open and candleBody >= atrValue * execCandleATRMult and nearHigh and wickOK
+
+f_strongBearCandle(atrValue) =>
+    float candleRange = high - low
+    float candleBody = math.abs(close - open)
+    float lowerWick = math.min(close, open) - low
+    bool rangeValid = candleRange > 0
+    bool nearLow = rangeValid and f_safeDiv(close - low, candleRange) <= execCloseNearExtreme
+    bool wickOK = candleBody > 0 and f_safeDiv(lowerWick, candleBody) <= execMaxOpposingWickBody
+    close < open and candleBody >= atrValue * execCandleATRMult and nearLow and wickOK
+
+f_htfBullBiasCalc() =>
+    float htfEma = ta.ema(close, htfBiasEMALen)
+    float htfLowShort = ta.lowest(low, htfBiasShortLookback)
+    float htfLowLong = ta.lowest(low, htfBiasLongLookback)
+    close > htfEma and htfEma >= htfEma[1] and htfLowShort > htfLowLong
+
+f_htfBearBiasCalc() =>
+    float htfEma = ta.ema(close, htfBiasEMALen)
+    float htfHighShort = ta.highest(high, htfBiasShortLookback)
+    float htfHighLong = ta.highest(high, htfBiasLongLookback)
+    close < htfEma and htfEma <= htfEma[1] and htfHighShort < htfHighLong
+
+f_sniperBullCandle(atrValue, requireMinorBreak) =>
+    float candleRange = high - low
+    float candleBody = math.abs(close - open)
+    float upperWick = high - math.max(close, open)
+    bool rangeValid = candleRange > 0
+    bool nearHigh = rangeValid and f_safeDiv(high - close, candleRange) <= sniperCloseNearExtremePct
+    bool wickOK = candleBody > 0 and f_safeDiv(upperWick, candleBody) <= sniperMaxOpposingWickPct
+    bool minorBreakOK = not requireMinorBreak or high > high[1]
+    bool bodyDominant = rangeValid and f_safeDiv(candleBody, candleRange) >= 0.5
+    close > open and candleBody >= atrValue * sniperMinBodyATR and nearHigh and wickOK and minorBreakOK and bodyDominant
+
+f_sniperBearCandle(atrValue, requireMinorBreak) =>
+    float candleRange = high - low
+    float candleBody = math.abs(close - open)
+    float lowerWick = math.min(close, open) - low
+    bool rangeValid = candleRange > 0
+    bool nearLow = rangeValid and f_safeDiv(close - low, candleRange) <= sniperCloseNearExtremePct
+    bool wickOK = candleBody > 0 and f_safeDiv(lowerWick, candleBody) <= sniperMaxOpposingWickPct
+    bool minorBreakOK = not requireMinorBreak or low < low[1]
+    bool bodyDominant = rangeValid and f_safeDiv(candleBody, candleRange) >= 0.5
+    close < open and candleBody >= atrValue * sniperMinBodyATR and nearLow and wickOK and minorBreakOK and bodyDominant
+
+
+//-------------------------
+// Pattern Detection Helpers
+//-------------------------
+f_bodySize(idx) =>
+    math.abs(close[idx] - open[idx])
+
+f_upperWick(idx) =>
+    high[idx] - math.max(close[idx], open[idx])
+
+f_lowerWick(idx) =>
+    math.min(close[idx], open[idx]) - low[idx]
+
+f_hammer() =>
+    if bar_index < 1
+        false
+    else
+        float body = f_bodySize(0)
+        float upperWick = f_upperWick(0)
+        float lowerWick = f_lowerWick(0)
+        float barRange = high - low
+        barRange > 0 and lowerWick >= body * 2.0 and upperWick <= body * 0.5 and close > open
+
+f_shootingStar() =>
+    if bar_index < 1
+        false
+    else
+        float body = f_bodySize(0)
+        float upperWick = f_upperWick(0)
+        float lowerWick = f_lowerWick(0)
+        float barRange = high - low
+        barRange > 0 and upperWick >= body * 2.0 and lowerWick <= body * 0.5 and close < open
+
+f_morningStar() =>
+    if bar_index < 2
+        false
+    else
+        bool firstBear = close[2] < open[2]
+        float firstBody = f_bodySize(2)
+        bool secondSmall = f_bodySize(1) <= firstBody * 0.3
+        bool thirdBull = close > open
+        bool thirdEngulfs = close > (open[2] + close[2]) / 2.0
+        firstBear and secondSmall and thirdBull and thirdEngulfs
+
+f_eveningStar() =>
+    if bar_index < 2
+        false
+    else
+        bool firstBull = close[2] > open[2]
+        float firstBody = f_bodySize(2)
+        bool secondSmall = f_bodySize(1) <= firstBody * 0.3
+        bool thirdBear = close < open
+        bool thirdEngulfs = close < (open[2] + close[2]) / 2.0
+        firstBull and secondSmall and thirdBear and thirdEngulfs
+
+f_insideBarBullish() =>
+    if bar_index < 1
+        false
+    else
+        bool inside = high < high[1] and low > low[1]
+        bool bullish = close > open
+        inside and bullish
+
+f_insideBarBearish() =>
+    if bar_index < 1
+        false
+    else
+        bool inside = high < high[1] and low > low[1]
+        bool bearish = close < open
+        inside and bearish
+
+f_risingThreeMethods() =>
+    if bar_index < 4
+        false
+    else
+        bool firstBull = close[4] > open[4]
+        float firstBody = f_bodySize(4)
+        bool secondBear = close[3] < open[3] and high[3] < high[4] and low[3] > low[4]
+        bool thirdBear = close[2] < open[2] and high[2] < high[4] and low[2] > low[4]
+        bool fourthBear = close[1] < open[1] and high[1] < high[4] and low[1] > low[4]
+        bool fifthBull = close > open and close > close[4]
+        firstBull and secondBear and thirdBear and fourthBear and fifthBull
+
+f_fallingThreeMethods() =>
+    if bar_index < 4
+        false
+    else
+        bool firstBear = close[4] < open[4]
+        float firstBody = f_bodySize(4)
+        bool secondBull = close[3] > open[3] and high[3] < high[4] and low[3] > low[4]
+        bool thirdBull = close[2] > open[2] and high[2] < high[4] and low[2] > low[4]
+        bool fourthBull = close[1] > open[1] and high[1] < high[4] and low[1] > low[4]
+        bool fifthBear = close < open and close < close[4]
+        firstBear and secondBull and thirdBull and fourthBull and fifthBear
+
+//-------------------------
+// Signals (match MT5 flow)
+//-------------------------
+bullSimple  = showSimpleEngulfing and f_simpleBullishEngulfing()
+bearSimple  = showSimpleEngulfing and f_simpleBearishEngulfing()
+
+bullFlex    = f_bullishEngulfingFlexible()
+bearFlex    = f_bearishEngulfingFlexible()
+
+// Note: MT5 plots both simple and flexible into the same bullish/bearish buffers.
+// We do the same: show either (logical OR).
+bullEngulf  = bullSimple or bullFlex
+bearEngulf  = bearSimple or bearFlex
+
+bullConsec  = showConsecutiveArrows and bullFlex[1] and (close > open)   // MT5: consecutive is only after IsBullishEngulfing (flex), not simple
+bearConsec  = showConsecutiveArrows and bearFlex[1] and (close < open)
+
+// Pattern signals with filters
+emaContinuation = ta.ema(close, continuationEMALen)
+emaRising = emaContinuation > emaContinuation[1]
+emaFalling = emaContinuation < emaContinuation[1]
+
+hammerSignal = showHammer and f_hammer()
+shootingStarSignal = showShootingStar and f_shootingStar()
+morningStarSignal = showMorningStar and f_morningStar()
+eveningStarSignal = showEveningStar and f_eveningStar()
+
+insideBarBullSignal = showInsideBarBull and f_insideBarBullish()
+insideBarBearSignal = showInsideBarBear and f_insideBarBearish()
+risingThreeMethodsSignal = showRisingThreeMethods and f_risingThreeMethods()
+fallingThreeMethodsSignal = showFallingThreeMethods and f_fallingThreeMethods()
+
+// Apply trend filtering for continuations
+insideBarBullFiltered = filterContinuationsByTrend ? (insideBarBullSignal and close > emaContinuation and emaRising) : insideBarBullSignal
+insideBarBearFiltered = filterContinuationsByTrend ? (insideBarBearSignal and close < emaContinuation and emaFalling) : insideBarBearSignal
+risingThreeMethodsFiltered = filterContinuationsByTrend ? (risingThreeMethodsSignal and close > emaContinuation and emaRising) : risingThreeMethodsSignal
+fallingThreeMethodsFiltered = filterContinuationsByTrend ? (fallingThreeMethodsSignal and close < emaContinuation and emaFalling) : fallingThreeMethodsSignal
+
+// Initialize reversal filtered variables (zone filtering applied later)
+hammerFiltered = hammerSignal
+shootingStarFiltered = shootingStarSignal
+morningStarFiltered = morningStarSignal
+eveningStarFiltered = eveningStarSignal
+
+// Initialize orange zone signals (will be calculated later)
+buyOrangeInZone = false
+sellOrangeInZone = false
+
+// Initialize final signals (will be calculated later)
+finalBullSignal = false
+finalBearSignal = false
+
+// Initialize filtered signals (will be calculated later)
+filteredBullSignal = false
+filteredBearSignal = false
+
+// Initialize execution signals (calculated after blockers/context)
+executionBullSignal = false
+executionBearSignal = false
+executionBullConfirmed = false
+executionBearConfirmed = false
+sniperBullSignal = false
+sniperBearSignal = false
+sniperBullConfirmed = false
+sniperBearConfirmed = false
+
+// TP/SL drawing state
+var array<box> tpSlRiskBoxes = array.new<box>()
+var array<box> tpSlRewardBoxes = array.new<box>()
+var array<line> tpSlEntryLines = array.new<line>()
+var array<line> tpSlTP1Lines = array.new<line>()
+var array<line> tpSlTP2Lines = array.new<line>()
+var array<label> tpSlSLLabels = array.new<label>()
+var array<label> tpSlTP1Labels = array.new<label>()
+var array<label> tpSlTP2Labels = array.new<label>()
+var array<int> tpSlDirections = array.new<int>()
+var array<int> tpSlStartBars = array.new<int>()
+var array<bool> tpSlIsActive = array.new<bool>()
+var array<bool> tpSlTP1HitStates = array.new<bool>()
+var array<float> tpSlEntryPrices = array.new<float>()
+var array<float> tpSlSLPrices = array.new<float>()
+var array<float> tpSlTP1Prices = array.new<float>()
+var array<float> tpSlTP2Prices = array.new<float>()
+
+f_deleteTPSLSetupAt(int setupIdx) =>
+    box riskBox = array.get(tpSlRiskBoxes, setupIdx)
+    if not na(riskBox)
+        box.delete(riskBox)
+    box rewardBox = array.get(tpSlRewardBoxes, setupIdx)
+    if not na(rewardBox)
+        box.delete(rewardBox)
+    line entryLine = array.get(tpSlEntryLines, setupIdx)
+    if not na(entryLine)
+        line.delete(entryLine)
+    line tp1Line = array.get(tpSlTP1Lines, setupIdx)
+    if not na(tp1Line)
+        line.delete(tp1Line)
+    line tp2Line = array.get(tpSlTP2Lines, setupIdx)
+    if not na(tp2Line)
+        line.delete(tp2Line)
+    label slLabel = array.get(tpSlSLLabels, setupIdx)
+    if not na(slLabel)
+        label.delete(slLabel)
+    label tp1Label = array.get(tpSlTP1Labels, setupIdx)
+    if not na(tp1Label)
+        label.delete(tp1Label)
+    label tp2Label = array.get(tpSlTP2Labels, setupIdx)
+    if not na(tp2Label)
+        label.delete(tp2Label)
+    array.remove(tpSlRiskBoxes, setupIdx)
+    array.remove(tpSlRewardBoxes, setupIdx)
+    array.remove(tpSlEntryLines, setupIdx)
+    array.remove(tpSlTP1Lines, setupIdx)
+    array.remove(tpSlTP2Lines, setupIdx)
+    array.remove(tpSlSLLabels, setupIdx)
+    array.remove(tpSlTP1Labels, setupIdx)
+    array.remove(tpSlTP2Labels, setupIdx)
+    array.remove(tpSlDirections, setupIdx)
+    array.remove(tpSlStartBars, setupIdx)
+    array.remove(tpSlIsActive, setupIdx)
+    array.remove(tpSlTP1HitStates, setupIdx)
+    array.remove(tpSlEntryPrices, setupIdx)
+    array.remove(tpSlSLPrices, setupIdx)
+    array.remove(tpSlTP1Prices, setupIdx)
+    array.remove(tpSlTP2Prices, setupIdx)
+
+
+//-------------------------
+// Alerts
+//-------------------------
+
+// SUPPLY / DEMAND ZONES
+
+// Arrays to store zone data (prices only, no visible lines)
+var array<float> supplyTopPrices = array.new<float>()
+var array<float> supplyBottomPrices = array.new<float>()
+var array<bool> supplyIsStrong = array.new<bool>()
+var array<int> supplyBarIndex = array.new<int>()
+var array<int> supplyTouchCount = array.new<int>()
+
+var array<float> demandTopPrices = array.new<float>()
+var array<float> demandBottomPrices = array.new<float>()
+var array<bool> demandIsStrong = array.new<bool>()
+var array<int> demandBarIndex = array.new<int>()
+var array<int> demandTouchCount = array.new<int>()
+
+// ATR and Volume calculations
+atr = ta.atr(atrLen)
+volSMA = ta.sma(volume, volLen)
+
+// Pivot detection
+pivotHigh = ta.pivothigh(high, pivotLen, pivotLen)
+pivotLow = ta.pivotlow(low, pivotLen, pivotLen)
+
+// Check if zone is strong at pivot candle
+f_isStrongZone(pivotBarIndex) =>
+    bool isStrong = false
+    if pivotBarIndex >= 0
+        float pivotRange = high[pivotBarIndex] - low[pivotBarIndex]
+        float pivotVol = volume[pivotBarIndex]
+        
+        if useRangeStrength and pivotRange > atr[pivotBarIndex] * atrMultStrong
+            isStrong := true
+        else if useVolumeStrength and pivotVol > volSMA[pivotBarIndex] * volMultStrong
+            isStrong := true
+    isStrong
+
+// Prune old zones based on lookback window
+f_pruneOldZones() =>
+    int cutoff = bar_index - zoneLookbackBars
+    
+    // Prune supply zones (oldest first, index 0)
+    bool supplyDone = false
+    while array.size(supplyBarIndex) > 0 and not supplyDone
+        int oldestBarIdx = array.get(supplyBarIndex, 0)
+        if oldestBarIdx < cutoff
+            float _1 = array.shift(supplyTopPrices)
+            float _2 = array.shift(supplyBottomPrices)
+            bool _3 = array.shift(supplyIsStrong)
+            int _4 = array.shift(supplyBarIndex)
+            int _5 = array.shift(supplyTouchCount)
+        else
+            supplyDone := true
+    
+    // Prune demand zones (oldest first, index 0)
+    bool demandDone = false
+    while array.size(demandBarIndex) > 0 and not demandDone
+        int oldestBarIdx = array.get(demandBarIndex, 0)
+        if oldestBarIdx < cutoff
+            float _1 = array.shift(demandTopPrices)
+            float _2 = array.shift(demandBottomPrices)
+            bool _3 = array.shift(demandIsStrong)
+            int _4 = array.shift(demandBarIndex)
+            int _5 = array.shift(demandTouchCount)
+        else
+            demandDone := true
+    
+    0
+
+// Create supply zone (stores prices only, no visible lines)
+f_createSupplyZone(pivotPrice, pivotBarIdx, isStrong) =>
+    if not na(pivotPrice)
+        if array.size(supplyTopPrices) >= maxSupplyZones
+            // Remove oldest zone
+            if array.size(supplyTopPrices) > 0
+                array.shift(supplyTopPrices)
+                array.shift(supplyBottomPrices)
+                array.shift(supplyIsStrong)
+                array.shift(supplyBarIndex)
+                array.shift(supplyTouchCount)
+        
+        float topPrice = pivotPrice
+        float bottomPrice = pivotPrice - atr[pivotBarIdx] * zoneATRMult
+        
+        array.push(supplyTopPrices, topPrice)
+        array.push(supplyBottomPrices, bottomPrice)
+        array.push(supplyIsStrong, isStrong)
+        array.push(supplyBarIndex, pivotBarIdx)
+        array.push(supplyTouchCount, 0)
+        
+        // Prune old zones after adding new one
+        f_pruneOldZones()
+
+// Create demand zone (stores prices only, no visible lines)
+f_createDemandZone(pivotPrice, pivotBarIdx, isStrong) =>
+    if not na(pivotPrice)
+        if array.size(demandTopPrices) >= maxDemandZones
+            // Remove oldest zone
+            if array.size(demandTopPrices) > 0
+                array.shift(demandTopPrices)
+                array.shift(demandBottomPrices)
+                array.shift(demandIsStrong)
+                array.shift(demandBarIndex)
+                array.shift(demandTouchCount)
+        
+        float bottomPrice = pivotPrice
+        float topPrice = pivotPrice + atr[pivotBarIdx] * zoneATRMult
+        
+        array.push(demandTopPrices, topPrice)
+        array.push(demandBottomPrices, bottomPrice)
+        array.push(demandIsStrong, isStrong)
+        array.push(demandBarIndex, pivotBarIdx)
+        array.push(demandTouchCount, 0)
+        
+        // Prune old zones after adding new one
+        f_pruneOldZones()
+
+// Detect and create zones on pivot confirmation (called on every bar for consistency)
+// Check zone strength for both pivots on every bar (called unconditionally for consistency)
+supplyZoneStrength = f_isStrongZone(pivotLen)
+demandZoneStrength = f_isStrongZone(pivotLen)
+
+// Create zones (functions handle na checks internally)
+f_createSupplyZone(pivotHigh, pivotLen, supplyZoneStrength)
+f_createDemandZone(pivotLow, pivotLen, demandZoneStrength)
+
+// Prune old zones once per bar (in case no new zones were created)
+f_pruneOldZones()
+
+// TRADE SIGNALS (Orange in Zones)
+
+// Helper: Check if price is inside any supply zone
+f_inAnySupplyZone(float px) =>
+    bool inside = false
+    int zoneCutoff = bar_index - zoneLookbackBars
+    if array.size(supplyTopPrices) > 0
+        for i = 0 to array.size(supplyTopPrices) - 1
+            // Skip zones older than cutoff
+            bool zoneValid = true
+            if array.size(supplyBarIndex) > i
+                int zoneBarIdx = array.get(supplyBarIndex, i)
+                if zoneBarIdx < zoneCutoff
+                    zoneValid := false
+            if zoneValid
+                float top = array.get(supplyTopPrices, i)
+                float bot = array.get(supplyBottomPrices, i)
+                if not na(top) and not na(bot)
+                    if px <= top and px >= bot
+                        inside := true
+                        break
+    inside
+
+// Helper: Check if price is inside any demand zone
+f_inAnyDemandZone(float px) =>
+    bool inside = false
+    int zoneCutoff = bar_index - zoneLookbackBars
+    if array.size(demandTopPrices) > 0
+        for i = 0 to array.size(demandTopPrices) - 1
+            // Skip zones older than cutoff
+            bool zoneValid = true
+            if array.size(demandBarIndex) > i
+                int zoneBarIdx = array.get(demandBarIndex, i)
+                if zoneBarIdx < zoneCutoff
+                    zoneValid := false
+            if zoneValid
+                float top = array.get(demandTopPrices, i)
+                float bot = array.get(demandBottomPrices, i)
+                if not na(top) and not na(bot)
+                    if px >= bot and px <= top
+                        inside := true
+                        break
+    inside
+
+// Find hot zones (nearest above/below price) - needed for zone type filtering
+float nearestSupplyTop = na
+float nearestDemandBottom = na
+int nearestSupplyIdx = -1
+int nearestDemandIdx = -1
+
+// Find nearest supply zone above price
+int zoneCutoffMain = bar_index - zoneLookbackBars
+if array.size(supplyTopPrices) > 0
+    for i = 0 to array.size(supplyTopPrices) - 1
+        // Skip zones older than cutoff
+        bool zoneValid = true
+        if array.size(supplyBarIndex) > i
+            int zoneBarIdx = array.get(supplyBarIndex, i)
+            if zoneBarIdx < zoneCutoffMain
+                zoneValid := false
+        if zoneValid
+            float topPrice = array.get(supplyTopPrices, i)
+            float bottomPrice = array.get(supplyBottomPrices, i)
+            if not na(topPrice) and not na(bottomPrice)
+                if close < topPrice and (na(nearestSupplyTop) or topPrice < nearestSupplyTop)
+                    nearestSupplyTop := topPrice
+                    nearestSupplyIdx := i
+
+// Find nearest demand zone below price
+if array.size(demandBottomPrices) > 0
+    for i = 0 to array.size(demandBottomPrices) - 1
+        // Skip zones older than cutoff
+        bool zoneValid = true
+        if array.size(demandBarIndex) > i
+            int zoneBarIdx = array.get(demandBarIndex, i)
+            if zoneBarIdx < zoneCutoffMain
+                zoneValid := false
+        if zoneValid
+            float topPrice = array.get(demandTopPrices, i)
+            float bottomPrice = array.get(demandBottomPrices, i)
+            if not na(topPrice) and not na(bottomPrice)
+                if close > bottomPrice and (na(nearestDemandBottom) or bottomPrice > nearestDemandBottom)
+                    nearestDemandBottom := bottomPrice
+                    nearestDemandIdx := i
+
+// Helper: Check if price is inside an ALLOWED supply zone (filtered by zone type)
+f_inAllowedSupplyZone(float px) =>
+    bool inside = false
+    int zoneCutoff = bar_index - zoneLookbackBars
+    if array.size(supplyTopPrices) > 0
+        for i = 0 to array.size(supplyTopPrices) - 1
+            // Skip zones older than cutoff
+            bool zoneValid = true
+            if array.size(supplyBarIndex) > i
+                int zoneBarIdx = array.get(supplyBarIndex, i)
+                if zoneBarIdx < zoneCutoff
+                    zoneValid := false
+            if zoneValid
+                float top = array.get(supplyTopPrices, i)
+                float bot = array.get(supplyBottomPrices, i)
+                if not na(top) and not na(bot)
+                    if px <= top and px >= bot
+                        // Determine zone type
+                        bool isHot = (i == nearestSupplyIdx)
+                        bool isStrong = false
+                        if array.size(supplyIsStrong) > i
+                            isStrong := array.get(supplyIsStrong, i)
+                        bool isNormal = not isStrong and not isHot
+                        
+                        // Check if this zone type is allowed
+                        bool allowed = false
+                        if isHot and allowHotZones
+                            allowed := true
+                        else if isStrong and allowStrongZones
+                            allowed := true
+                        else if isNormal and allowNormalZones
+                            allowed := true
+                        
+                        if allowed
+                            inside := true
+                            break
+    inside
+
+// Helper: Check if price is inside an ALLOWED demand zone (filtered by zone type)
+f_inAllowedDemandZone(float px) =>
+    bool inside = false
+    int zoneCutoff = bar_index - zoneLookbackBars
+    if array.size(demandTopPrices) > 0
+        for i = 0 to array.size(demandTopPrices) - 1
+            // Skip zones older than cutoff
+            bool zoneValid = true
+            if array.size(demandBarIndex) > i
+                int zoneBarIdx = array.get(demandBarIndex, i)
+                if zoneBarIdx < zoneCutoff
+                    zoneValid := false
+            if zoneValid
+                float top = array.get(demandTopPrices, i)
+                float bot = array.get(demandBottomPrices, i)
+                if not na(top) and not na(bot)
+                    if px >= bot and px <= top
+                        // Determine zone type
+                        bool isHot = (i == nearestDemandIdx)
+                        bool isStrong = false
+                        if array.size(demandIsStrong) > i
+                            isStrong := array.get(demandIsStrong, i)
+                        bool isNormal = not isStrong and not isHot
+                        
+                        // Check if this zone type is allowed
+                        bool allowed = false
+                        if isHot and allowHotZones
+                            allowed := true
+                        else if isStrong and allowStrongZones
+                            allowed := true
+                        else if isNormal and allowNormalZones
+                            allowed := true
+                        
+                        if allowed
+                            inside := true
+                            break
+    inside
+
+// Helper: Get the bottom price of the FIRST allowed demand zone that contains px
+f_getTouchedDemandBottom(float px) =>
+    float result = na
+    int zoneCutoff = bar_index - zoneLookbackBars
+    if array.size(demandTopPrices) > 0
+        for i = 0 to array.size(demandTopPrices) - 1
+            // Skip zones older than cutoff
+            bool zoneValid = true
+            if array.size(demandBarIndex) > i
+                int zoneBarIdx = array.get(demandBarIndex, i)
+                if zoneBarIdx < zoneCutoff
+                    zoneValid := false
+            if zoneValid
+                float top = array.get(demandTopPrices, i)
+                float bot = array.get(demandBottomPrices, i)
+                if not na(top) and not na(bot)
+                    if px >= bot and px <= top
+                        // Determine zone type
+                        bool isHot = (i == nearestDemandIdx)
+                        bool isStrong = false
+                        if array.size(demandIsStrong) > i
+                            isStrong := array.get(demandIsStrong, i)
+                        bool isNormal = not isStrong and not isHot
+                        
+                        // Check if this zone type is allowed
+                        bool allowed = false
+                        if isHot and allowHotZones
+                            allowed := true
+                        else if isStrong and allowStrongZones
+                            allowed := true
+                        else if isNormal and allowNormalZones
+                            allowed := true
+                        
+                        if allowed
+                            result := bot
+                            break
+    result
+
+// Helper: Get the top price of the FIRST allowed supply zone that contains px
+f_getTouchedSupplyTop(float px) =>
+    float result = na
+    int zoneCutoff = bar_index - zoneLookbackBars
+    if array.size(supplyTopPrices) > 0
+        for i = 0 to array.size(supplyTopPrices) - 1
+            // Skip zones older than cutoff
+            bool zoneValid = true
+            if array.size(supplyBarIndex) > i
+                int zoneBarIdx = array.get(supplyBarIndex, i)
+                if zoneBarIdx < zoneCutoff
+                    zoneValid := false
+            if zoneValid
+                float top = array.get(supplyTopPrices, i)
+                float bot = array.get(supplyBottomPrices, i)
+                if not na(top) and not na(bot)
+                    if px <= top and px >= bot
+                        // Determine zone type
+                        bool isHot = (i == nearestSupplyIdx)
+                        bool isStrong = false
+                        if array.size(supplyIsStrong) > i
+                            isStrong := array.get(supplyIsStrong, i)
+                        bool isNormal = not isStrong and not isHot
+                        
+                        // Check if this zone type is allowed
+                        bool allowed = false
+                        if isHot and allowHotZones
+                            allowed := true
+                        else if isStrong and allowStrongZones
+                            allowed := true
+                        else if isNormal and allowNormalZones
+                            allowed := true
+                        
+                        if allowed
+                            result := top
+                            break
+    result
+
+// Helper: Get touch count for the FIRST allowed demand zone that contains px.
+f_getTouchedDemandTouches(float px) =>
+    int result = 0
+    int zoneCutoff = bar_index - zoneLookbackBars
+    if array.size(demandTopPrices) > 0
+        for i = 0 to array.size(demandTopPrices) - 1
+            bool zoneValid = true
+            if array.size(demandBarIndex) > i
+                int zoneBarIdx = array.get(demandBarIndex, i)
+                if zoneBarIdx < zoneCutoff
+                    zoneValid := false
+            if zoneValid
+                float top = array.get(demandTopPrices, i)
+                float bot = array.get(demandBottomPrices, i)
+                if not na(top) and not na(bot)
+                    if px >= bot and px <= top
+                        result := array.size(demandTouchCount) > i ? array.get(demandTouchCount, i) : 0
+                        break
+    result
+
+// Helper: Get touch count for the FIRST allowed supply zone that contains px.
+f_getTouchedSupplyTouches(float px) =>
+    int result = 0
+    int zoneCutoff = bar_index - zoneLookbackBars
+    if array.size(supplyTopPrices) > 0
+        for i = 0 to array.size(supplyTopPrices) - 1
+            bool zoneValid = true
+            if array.size(supplyBarIndex) > i
+                int zoneBarIdx = array.get(supplyBarIndex, i)
+                if zoneBarIdx < zoneCutoff
+                    zoneValid := false
+            if zoneValid
+                float top = array.get(supplyTopPrices, i)
+                float bot = array.get(supplyBottomPrices, i)
+                if not na(top) and not na(bot)
+                    if px <= top and px >= bot
+                        result := array.size(supplyTouchCount) > i ? array.get(supplyTouchCount, i) : 0
+                        break
+    result
+
+// Apply zone filtering for reversals (after zone functions are defined)
+if filterReversalsByZone
+    hammerFiltered := hammerSignal and f_inAllowedDemandZone(close)
+    morningStarFiltered := morningStarSignal and f_inAllowedDemandZone(close)
+    shootingStarFiltered := shootingStarSignal and f_inAllowedSupplyZone(close)
+    eveningStarFiltered := eveningStarSignal and f_inAllowedSupplyZone(close)
+
+// Note: Individual pattern plotshapes removed to prevent stacking
+// Only final BUY/SELL signals are plotted below
+
+// Zone touch price based on mode
+sellPx = zoneTouchMode == "Close" ? close : high
+buyPx = zoneTouchMode == "Close" ? close : low
+sellPrevPx = zoneTouchMode == "Close" ? close[1] : high[1]
+buyPrevPx = zoneTouchMode == "Close" ? close[1] : low[1]
+
+// Zone touch counts use fresh entries into the zone as a safe approximation of zone freshness.
+if array.size(supplyTopPrices) > 0
+    for i = 0 to array.size(supplyTopPrices) - 1
+        float top = array.get(supplyTopPrices, i)
+        float bot = array.get(supplyBottomPrices, i)
+        bool insideNow = not na(top) and not na(bot) and sellPx <= top and sellPx >= bot
+        bool insidePrev = not na(top) and not na(bot) and sellPrevPx <= top and sellPrevPx >= bot
+        if insideNow and not insidePrev and array.size(supplyTouchCount) > i
+            array.set(supplyTouchCount, i, array.get(supplyTouchCount, i) + 1)
+
+if array.size(demandTopPrices) > 0
+    for i = 0 to array.size(demandTopPrices) - 1
+        float top = array.get(demandTopPrices, i)
+        float bot = array.get(demandBottomPrices, i)
+        bool insideNow = not na(top) and not na(bot) and buyPx >= bot and buyPx <= top
+        bool insidePrev = not na(top) and not na(bot) and buyPrevPx >= bot and buyPrevPx <= top
+        if insideNow and not insidePrev and array.size(demandTouchCount) > i
+            array.set(demandTouchCount, i, array.get(demandTouchCount, i) + 1)
+
+// Trade signals: orange candle in ALLOWED zone
+sellOrangeInZone := bearConsec and f_inAllowedSupplyZone(sellPx)
+buyOrangeInZone := bullConsec and f_inAllowedDemandZone(buyPx)
+
+// Non-repaint: confirm on close if enabled
+if confirmOnClose
+    sellOrangeInZone := sellOrangeInZone and barstate.isconfirmed
+    buyOrangeInZone := buyOrangeInZone and barstate.isconfirmed
+
+// FILTER SYSTEM
+
+// Auto preset logic for Forex
+int emaLen = 100
+int rsiLen = 14
+int structShort = 10
+int structLong = 25
+
+if presetMode == "Auto (Forex)"
+    int tfSeconds = timeframe.in_seconds()
+    if tfSeconds == 60  // 1 minute
+        emaLen := 200
+        structShort := 20
+        structLong := 50
+    else if tfSeconds == 300  // 5 minutes
+        emaLen := 200
+        structShort := 14
+        structLong := 35
+    else if tfSeconds == 900  // 15 minutes
+        emaLen := 100
+        structShort := 10
+        structLong := 25
+    else if tfSeconds == 3600  // 1 hour
+        emaLen := 50
+        structShort := 8
+        structLong := 20
+    else
+        emaLen := 100
+        structShort := 10
+        structLong := 25
+else
+    emaLen := emaLenManual
+    rsiLen := rsiLenManual
+    structShort := structShortManual
+    structLong := structLongManual
+
+// Compute filter indicators
+ema = ta.ema(close, emaLen)
+rsi = ta.rsi(close, rsiLen)
+emaQualityManual = ta.ema(close, emaLenQuality)
+recentLow10 = ta.lowest(low, 10)
+recentHigh10 = ta.highest(high, 10)
+atrSpace = ta.atr(spaceATRLen)
+emaBlock = ta.ema(close, emaSlopeLen)
+recentHighStruct = ta.highest(high, structLookback)
+recentLowStruct = ta.lowest(low, structLookback)
+impHigh = ta.highest(high, impulseRangeLookback)
+impLow = ta.lowest(low, impulseRangeLookback)
+prevHighBreakout = ta.highest(high, breakoutLookback)[1]
+prevLowBreakout = ta.lowest(low, breakoutLookback)[1]
+bosPivotHigh = ta.pivothigh(high, bosPivotLen, bosPivotLen)
+bosPivotLow = ta.pivotlow(low, bosPivotLen, bosPivotLen)
+sniperPivotHigh = ta.pivothigh(high, sniperBosLookback, sniperBosLookback)
+sniperPivotLow = ta.pivotlow(low, sniperBosLookback, sniperBosLookback)
+rangeHigh = ta.highest(high, rangeLookback)
+rangeLow = ta.lowest(low, rangeLookback)
+rangeCloseReference = nz(close[rangeLookback], close)
+rangeEmaReference = nz(ema[rangeLookback], ema)
+
+// Market Structure calculations (called on every bar for consistency)
+var float highestHighShort = na
+var float highestHighLong = na
+var float lowestLowShort = na
+var float lowestLowLong = na
+highestHighShort := ta.highest(high, structShort)
+highestHighLong := ta.highest(high, structLong)
+lowestLowShort := ta.lowest(low, structShort)
+lowestLowLong := ta.lowest(low, structLong)
+emaPrev = nz(ema[1], ema)
+
+// Market Structure: bullish = higher highs and higher lows, bearish = lower highs and lower lows
+bullStructure = highestHighShort > highestHighLong and lowestLowShort > lowestLowLong
+bearStructure = lowestLowShort < lowestLowLong and highestHighShort < highestHighLong
+
+// Execution HTF bias uses confirmed higher-timeframe trend + structure with lookahead off to avoid repainting.
+htfBullBias = request.security(syminfo.tickerid, htfBiasTimeframe, f_htfBullBiasCalc(), lookahead=barmerge.lookahead_off)
+htfBearBias = request.security(syminfo.tickerid, htfBiasTimeframe, f_htfBearBiasCalc(), lookahead=barmerge.lookahead_off)
+execStructBuySeries = close > ema and ema >= emaPrev and lowestLowShort > lowestLowLong
+execStructSellSeries = close < ema and ema <= emaPrev and highestHighShort < highestHighLong
+
+// Compute directional permissions based on filterMode
+bool buyFilterOK = true
+bool sellFilterOK = true
+
+if filterMode == "None"
+    buyFilterOK := true
+    sellFilterOK := true
+else if filterMode == "EMA Trend"
+    buyFilterOK := close > ema
+    sellFilterOK := close < ema
+else if filterMode == "RSI Momentum"
+    buyFilterOK := rsi > rsiMid
+    sellFilterOK := rsi < rsiMid
+else if filterMode == "Market Structure"
+    buyFilterOK := bullStructure
+    sellFilterOK := bearStructure
+else if filterMode == "EMA + RSI"
+    buyFilterOK := close > ema and rsi > rsiMid
+    sellFilterOK := close < ema and rsi < rsiMid
+else if filterMode == "EMA + Structure"
+    buyFilterOK := close > ema and bullStructure
+    sellFilterOK := close < ema and bearStructure
+
+// Apply filters to zone-confirmed signals
+sellOrangeInZone := sellOrangeInZone and sellFilterOK
+buyOrangeInZone := buyOrangeInZone and buyFilterOK
+
+// Combine all raw signals (after orange signals are calculated)
+rawBullSignal = bullEngulf or bullConsec or hammerFiltered or morningStarFiltered or insideBarBullFiltered or risingThreeMethodsFiltered or buyOrangeInZone
+rawBearSignal = bearEngulf or bearConsec or shootingStarFiltered or eveningStarFiltered or insideBarBearFiltered or fallingThreeMethodsFiltered or sellOrangeInZone
+
+// Quality filtering and anti-spam logic
+var int lastBullSignalBar = na
+var int lastBearSignalBar = na
+
+emaQuality = qualityEMASource == "Trend EMA (ema variable)" ? ema : emaQualityManual
+emaQualityRising = na(emaQuality[1]) ? true : emaQuality >= emaQuality[1]
+emaQualityFalling = na(emaQuality[1]) ? true : emaQuality <= emaQuality[1]
+
+// Priority-based signal selection (if multiple signals on same bar, prioritize)
+bool hasReversalBull = hammerFiltered or morningStarFiltered
+bool hasReversalBear = shootingStarFiltered or eveningStarFiltered
+bool hasEngulfingBull = bullEngulf or bullConsec
+bool hasEngulfingBear = bearEngulf or bearConsec
+bool hasContinuationBull = insideBarBullFiltered or risingThreeMethodsFiltered
+bool hasContinuationBear = insideBarBearFiltered or fallingThreeMethodsFiltered
+
+// Select signal based on priority: Reversal > Engulfing > Continuation > Orange
+bool selectedBullSignal = false
+if rawBullSignal
+    if hasReversalBull
+        selectedBullSignal := true
+    else if hasEngulfingBull
+        selectedBullSignal := true
+    else if hasContinuationBull
+        selectedBullSignal := true
+    else if buyOrangeInZone
+        selectedBullSignal := true
+
+bool selectedBearSignal = false
+if rawBearSignal
+    if hasReversalBear
+        selectedBearSignal := true
+    else if hasEngulfingBear
+        selectedBearSignal := true
+    else if hasContinuationBear
+        selectedBearSignal := true
+    else if sellOrangeInZone
+        selectedBearSignal := true
+
+// Apply quality filter
+bool qualityBullOK = true
+bool qualityBearOK = true
+
+if useQualityFilter
+    qualityBullOK := close > emaQuality and emaQualityRising
+    qualityBearOK := close < emaQuality and emaQualityFalling
+
+// Apply anti-spam spacing
+bool spacingBullOK = true
+bool spacingBearOK = true
+
+if not na(lastBullSignalBar) and (bar_index - lastBullSignalBar) < minBarsBetweenSignals
+    spacingBullOK := false
+
+if not na(lastBearSignalBar) and (bar_index - lastBearSignalBar) < minBarsBetweenSignals
+    spacingBearOK := false
+
+// Direction lock: block opposite direction after signal
+if not na(lastBullSignalBar) and (bar_index - lastBullSignalBar) < minBarsBetweenSignals
+    spacingBearOK := false
+
+if not na(lastBearSignalBar) and (bar_index - lastBearSignalBar) < minBarsBetweenSignals
+    spacingBullOK := false
+
+// Create base filtered signals (quality + spacing)
+bool baseBullOK = selectedBullSignal and qualityBullOK and spacingBullOK
+bool baseBearOK = selectedBearSignal and qualityBearOK and spacingBearOK
+
+filteredBullSignal := baseBullOK
+filteredBearSignal := baseBearOK
+
+// Final signals (for TP/SL drawing logic)
+finalBullSignal := filteredBullSignal
+finalBearSignal := filteredBearSignal
+
+// Plot gate: only plot on confirmed bars if confirmOnClose is enabled
+canPlot = confirmOnClose ? barstate.isconfirmed : true
+
+// BLOCKERS (Quality Filters)
+emaSlope = atrSpace > 0 ? (emaBlock - emaBlock[1]) / atrSpace : 0.0
+impRange = impHigh - impLow
+impulsePos = impRange > 0 ? (close - impLow) / impRange : 0.5
+
+float buySpace = na
+if not na(nearestSupplyTop)
+    buySpace := nearestSupplyTop - close
+else
+    buySpace := recentHighStruct - close
+
+float sellSpace = na
+if not na(nearestDemandBottom)
+    sellSpace := close - nearestDemandBottom
+else
+    sellSpace := close - recentLowStruct
+
+bool spaceOK_buy = false
+if na(buySpace) or buySpace <= 0
+    spaceOK_buy := true
+else
+    spaceOK_buy := buySpace >= minSpaceATR * atrSpace
+
+bool spaceOK_sell = false
+if na(sellSpace) or sellSpace <= 0
+    spaceOK_sell := true
+else
+    spaceOK_sell := sellSpace >= minSpaceATR * atrSpace
+
+bool emaSlopeOK_buy = true
+bool emaSlopeOK_sell = true
+
+if na(emaBlock[1])
+    emaSlopeOK_buy := true
+    emaSlopeOK_sell := true
+else
+    emaSlopeOK_buy := emaSlope >= minEmaSlopeATR and close > emaBlock
+    emaSlopeOK_sell := emaSlope <= -minEmaSlopeATR and close < emaBlock
+
+structureOK_buy = bullStructure
+structureOK_sell = bearStructure
+
+bool impulseOK_buy = true
+bool impulseOK_sell = true
+
+if impRange > atrSpace
+    impulseOK_buy := impulsePos <= maxEntryPctIntoImpulse + 0.15
+    impulseOK_sell := impulsePos >= (1.0 - maxEntryPctIntoImpulse - 0.15)
+
+buyBlockersOK = not enableBlockers or (
+    (not useSpaceBlocker or spaceOK_buy) and
+    (not useSlopeBlocker or emaSlopeOK_buy) and
+    (not useStructureBlocker or structureOK_buy) and
+    (not useImpulseBlocker or impulseOK_buy)
+)
+
+sellBlockersOK = not enableBlockers or (
+    (not useSpaceBlocker or spaceOK_sell) and
+    (not useSlopeBlocker or emaSlopeOK_sell) and
+    (not useStructureBlocker or structureOK_sell) and
+    (not useImpulseBlocker or impulseOK_sell)
+)
+
+string blockedBuyReason = ""
+string blockedBuyDetails = ""
+if enableBlockers and filteredBullSignal and canPlot and not buyBlockersOK
+    if not spaceOK_buy
+        blockedBuyReason := "SPACE"
+        blockedBuyDetails := str.tostring(math.round(buySpace / atrSpace * 100) / 100, "#.##") + "ATR"
+    else if not emaSlopeOK_buy
+        blockedBuyReason := "SLOPE"
+        blockedBuyDetails := str.tostring(math.round(emaSlope * 100) / 100, "#.##")
+    else if not structureOK_buy
+        blockedBuyReason := "STRUCT"
+    else if not impulseOK_buy
+        blockedBuyReason := "IMPULSE"
+        blockedBuyDetails := str.tostring(math.round(impulsePos * 100), "#") + "%"
+
+string blockedSellReason = ""
+string blockedSellDetails = ""
+if enableBlockers and filteredBearSignal and canPlot and not sellBlockersOK
+    if not spaceOK_sell
+        blockedSellReason := "SPACE"
+        blockedSellDetails := str.tostring(math.round(sellSpace / atrSpace * 100) / 100, "#.##") + "ATR"
+    else if not emaSlopeOK_sell
+        blockedSellReason := "SLOPE"
+        blockedSellDetails := str.tostring(math.round(emaSlope * 100) / 100, "#.##")
+    else if not structureOK_sell
+        blockedSellReason := "STRUCT"
+    else if not impulseOK_sell
+        blockedSellReason := "IMPULSE"
+        blockedSellDetails := str.tostring(math.round(impulsePos * 100), "#") + "%"
+
+if showBlockerDebug and blockedBuyReason != ""
+    string buyLabelText = blockedBuyReason
+    if blockedBuyDetails != ""
+        buyLabelText := buyLabelText + "\n" + blockedBuyDetails
+    label.new(bar_index, low - arrowDistance * 0.5, buyLabelText, color=color.yellow, textcolor=color.black, size=size.tiny)
+
+if showBlockerDebug and blockedSellReason != ""
+    string sellLabelText = blockedSellReason
+    if blockedSellDetails != ""
+        sellLabelText := sellLabelText + "\n" + blockedSellDetails
+    label.new(bar_index, high + arrowDistance * 0.5, sellLabelText, color=color.yellow, textcolor=color.black, size=size.tiny)
+
+// CONTEXT BLOCKERS
+atrContext = atr
+emaContext = ema
+
+float emaSlopeContext = emaContext - emaContext[emaSlopeLenContext]
+float emaSlopeAbsATR = atrContext > 0 ? math.abs(emaSlopeContext) / atrContext : 0.0
+
+bool emaSlopeOKContext = true
+if useEMASlopeBlocker
+    emaSlopeOKContext := emaSlopeAbsATR >= minEMASlopeATR
+
+float bodySize = math.abs(close - open)
+float bodyATR = atrContext > 0 ? bodySize / atrContext : 0.0
+
+bool bodyOK = true
+if useATRBodyBlocker
+    bodyOK := bodyATR >= minBodyATR
+
+int bullishCount = 0
+int bearishCount = 0
+for i = 1 to lateEntryLookback
+    if close[i] > open[i]
+        bullishCount += 1
+    if close[i] < open[i]
+        bearishCount += 1
+
+bool lateEntryOK_buy = true
+bool lateEntryOK_sell = true
+if useLateEntryBlocker
+    lateEntryOK_buy := bullishCount <= maxSameColorBeforeEntry
+    lateEntryOK_sell := bearishCount <= maxSameColorBeforeEntry
+
+float distToEMA = atrContext > 0 ? math.abs(close - emaContext) / atrContext : 0.0
+
+bool proximityOK = true
+if useProximityToEMA
+    proximityOK := distToEMA <= emaProxATR
+
+float prevHigh = prevHighBreakout
+float prevLow = prevLowBreakout
+
+bool breakoutOK_buy = true
+bool breakoutOK_sell = true
+if useRecentBreakoutConfirm
+    breakoutOK_buy := close > prevHigh or (close - emaContext) >= breakoutATR * atrContext
+    breakoutOK_sell := close < prevLow or (emaContext - close) >= breakoutATR * atrContext
+
+bool buyContextOK = not enableContextBlockers or (
+    (not useEMASlopeBlocker or emaSlopeOKContext) and
+    (not useATRBodyBlocker or bodyOK) and
+    (not useLateEntryBlocker or lateEntryOK_buy) and
+    (not useProximityToEMA or proximityOK) and
+    (not useRecentBreakoutConfirm or breakoutOK_buy)
+)
+
+bool sellContextOK = not enableContextBlockers or (
+    (not useEMASlopeBlocker or emaSlopeOKContext) and
+    (not useATRBodyBlocker or bodyOK) and
+    (not useLateEntryBlocker or lateEntryOK_sell) and
+    (not useProximityToEMA or proximityOK) and
+    (not useRecentBreakoutConfirm or breakoutOK_sell)
+)
+
+string contextBlockedBuyReason = ""
+if enableContextBlockers and filteredBullSignal and canPlot and buyBlockersOK and not buyContextOK
+    if useEMASlopeBlocker and not emaSlopeOKContext
+        contextBlockedBuyReason := "FLAT"
+    else if useATRBodyBlocker and not bodyOK
+        contextBlockedBuyReason := "SMALL"
+    else if useLateEntryBlocker and not lateEntryOK_buy
+        contextBlockedBuyReason := "LATE"
+    else if useProximityToEMA and not proximityOK
+        contextBlockedBuyReason := "FAR"
+    else if useRecentBreakoutConfirm and not breakoutOK_buy
+        contextBlockedBuyReason := "NO_BRK"
+
+string contextBlockedSellReason = ""
+if enableContextBlockers and filteredBearSignal and canPlot and sellBlockersOK and not sellContextOK
+    if useEMASlopeBlocker and not emaSlopeOKContext
+        contextBlockedSellReason := "FLAT"
+    else if useATRBodyBlocker and not bodyOK
+        contextBlockedSellReason := "SMALL"
+    else if useLateEntryBlocker and not lateEntryOK_sell
+        contextBlockedSellReason := "LATE"
+    else if useProximityToEMA and not proximityOK
+        contextBlockedSellReason := "FAR"
+    else if useRecentBreakoutConfirm and not breakoutOK_sell
+        contextBlockedSellReason := "NO_BRK"
+
+if showContextBlockerDebug and contextBlockedBuyReason != ""
+    label.new(bar_index, low - arrowDistance * 0.3, contextBlockedBuyReason, color=color.orange, textcolor=color.white, size=size.tiny)
+
+if showContextBlockerDebug and contextBlockedSellReason != ""
+    label.new(bar_index, high + arrowDistance * 0.3, contextBlockedSellReason, color=color.orange, textcolor=color.white, size=size.tiny)
+
+// Final setup signals remain the source of truth; plot conditions derive from them.
+bool mainSignalBuy = filteredBullSignal and canPlot and buyBlockersOK and buyContextOK
+bool mainSignalSell = filteredBearSignal and canPlot and sellBlockersOK and sellContextOK
+bool plotBuy = mainSignalBuy
+bool plotSell = mainSignalSell
+
+// Execution-grade layer adds stricter checklist filters on top of existing plotted signals.
+execCanPlot = executionConfirmOnClose ? barstate.isconfirmed : true
+execDemandOrigin = f_getTouchedDemandBottom(buyPx)
+execSupplyOrigin = f_getTouchedSupplyTop(sellPx)
+
+// Directional BOS tracks confirmed lower highs for buys and higher lows for sells.
+var float previousConfirmedBosHigh = na
+var float lastConfirmedBosHigh = na
+var float previousConfirmedBosLow = na
+var float lastConfirmedBosLow = na
+var float bullBosLevel = na
+var float bearBosLevel = na
+var int bullBosLevelBar = na
+var int bearBosLevelBar = na
+var float activeBullBreakLevel = na
+var float activeBearBreakLevel = na
+var int activeBullBreakBar = na
+var int activeBearBreakBar = na
+var bool bullRetestPassed = false
+var bool bearRetestPassed = false
+
+if not na(bosPivotHigh)
+    previousConfirmedBosHigh := lastConfirmedBosHigh
+    lastConfirmedBosHigh := bosPivotHigh
+    if not na(previousConfirmedBosHigh)
+        if bosPivotHigh < previousConfirmedBosHigh
+            bullBosLevel := bosPivotHigh
+            bullBosLevelBar := bar_index - bosPivotLen
+        else
+            bullBosLevel := na
+            bullBosLevelBar := na
+
+if not na(bosPivotLow)
+    previousConfirmedBosLow := lastConfirmedBosLow
+    lastConfirmedBosLow := bosPivotLow
+    if not na(previousConfirmedBosLow)
+        if bosPivotLow > previousConfirmedBosLow
+            bearBosLevel := bosPivotLow
+            bearBosLevelBar := bar_index - bosPivotLen
+        else
+            bearBosLevel := na
+            bearBosLevelBar := na
+
+float bosBuyBreakSource = bosBreakMode == "Close" ? close : high
+float bosSellBreakSource = bosBreakMode == "Close" ? close : low
+float bosBuyBreakSourcePrev = nz(bosBuyBreakSource[1], bosBuyBreakSource)
+float bosSellBreakSourcePrev = nz(bosSellBreakSource[1], bosSellBreakSource)
+bosBreakBuyNow = not na(bullBosLevel) and bar_index > bullBosLevelBar and bosBuyBreakSource > bullBosLevel and bosBuyBreakSourcePrev <= bullBosLevel
+bosBreakSellNow = not na(bearBosLevel) and bar_index > bearBosLevelBar and bosSellBreakSource < bearBosLevel and bosSellBreakSourcePrev >= bearBosLevel
+
+if bosBreakBuyNow
+    activeBullBreakLevel := bullBosLevel
+    activeBullBreakBar := bar_index
+    bullRetestPassed := false
+
+if bosBreakSellNow
+    activeBearBreakLevel := bearBosLevel
+    activeBearBreakBar := bar_index
+    bearRetestPassed := false
+
+if useExecutionRetest and not na(activeBullBreakBar) and not na(activeBullBreakLevel)
+    if bar_index > activeBullBreakBar and (bar_index - activeBullBreakBar) <= retestBarsWindow and low <= activeBullBreakLevel and close >= activeBullBreakLevel
+        bullRetestPassed := true
+    if (bar_index - activeBullBreakBar) > retestBarsWindow
+        activeBullBreakLevel := na
+        activeBullBreakBar := na
+        bullRetestPassed := false
+
+if useExecutionRetest and not na(activeBearBreakBar) and not na(activeBearBreakLevel)
+    if bar_index > activeBearBreakBar and (bar_index - activeBearBreakBar) <= retestBarsWindow and high >= activeBearBreakLevel and close <= activeBearBreakLevel
+        bearRetestPassed := true
+    if (bar_index - activeBearBreakBar) > retestBarsWindow
+        activeBearBreakLevel := na
+        activeBearBreakBar := na
+        bearRetestPassed := false
+
+execHTFBuyOK = not useHTFBiasFilter or htfBullBias
+execHTFSellOK = not useHTFBiasFilter or htfBearBias
+execZoneBuyOK = f_inAllowedDemandZone(buyPx)
+execZoneSellOK = f_inAllowedSupplyZone(sellPx)
+execStructBuyOK = execStructBuySeries
+execStructSellOK = execStructSellSeries
+execCandleBuyOK = not useExecutionCandleFilter or f_strongBullCandle(atrContext)
+execCandleSellOK = not useExecutionCandleFilter or f_strongBearCandle(atrContext)
+
+float execBuyRisk = na(execDemandOrigin) ? atrContext : math.max(close - execDemandOrigin, syminfo.mintick)
+float execSellRisk = na(execSupplyOrigin) ? atrContext : math.max(execSupplyOrigin - close, syminfo.mintick)
+float execBuySpace = na(buySpace) ? recentHighStruct - close : buySpace
+float execSellSpace = na(sellSpace) ? close - recentLowStruct : sellSpace
+float execBuyRequiredSpace = math.max(executionMinSpaceATR * atrContext, execBuyRisk * executionMinSpaceRR)
+float execSellRequiredSpace = math.max(executionMinSpaceATR * atrContext, execSellRisk * executionMinSpaceRR)
+execSpaceBuyOK = not useExecutionSpaceFilter or (na(execBuySpace) ? true : execBuySpace >= execBuyRequiredSpace)
+execSpaceSellOK = not useExecutionSpaceFilter or (na(execSellSpace) ? true : execSellSpace >= execSellRequiredSpace)
+
+float execDistEMA = atrContext > 0 ? math.abs(close - emaContext) / atrContext : 0.0
+float execDistDemandOrigin = na(execDemandOrigin) or atrContext <= 0 ? 0.0 : math.abs(close - execDemandOrigin) / atrContext
+float execDistSupplyOrigin = na(execSupplyOrigin) or atrContext <= 0 ? 0.0 : math.abs(execSupplyOrigin - close) / atrContext
+execLateBuyOK = not useExecutionLateEntryFilter or (execDistEMA <= executionLateFromEMAATR and execDistDemandOrigin <= executionLateFromZoneATR and impulsePos <= executionLateImpulsePct)
+execLateSellOK = not useExecutionLateEntryFilter or (execDistEMA <= executionLateFromEMAATR and execDistSupplyOrigin <= executionLateFromZoneATR and impulsePos >= (1.0 - executionLateImpulsePct))
+
+execBosBuyOK = not useExecutionBOS or bosBreakBuyNow or (useExecutionRetest and bullRetestPassed)
+execBosSellOK = not useExecutionBOS or bosBreakSellNow or (useExecutionRetest and bearRetestPassed)
+execRetestBuyOK = not useExecutionBOS or not useExecutionRetest or bullRetestPassed
+execRetestSellOK = not useExecutionBOS or not useExecutionRetest or bearRetestPassed
+
+int executionBullScore = (execHTFBuyOK ? scoreHTF : 0) + (execZoneBuyOK ? scoreZone : 0) + (execStructBuyOK ? scoreStructure : 0) + (execCandleBuyOK ? scoreCandle : 0) + (execSpaceBuyOK ? scoreSpace : 0) + (execLateBuyOK ? scoreLate : 0) + (execBosBuyOK ? scoreBOS : 0) + (execRetestBuyOK ? scoreRetest : 0)
+int executionBearScore = (execHTFSellOK ? scoreHTF : 0) + (execZoneSellOK ? scoreZone : 0) + (execStructSellOK ? scoreStructure : 0) + (execCandleSellOK ? scoreCandle : 0) + (execSpaceSellOK ? scoreSpace : 0) + (execLateSellOK ? scoreLate : 0) + (execBosSellOK ? scoreBOS : 0) + (execRetestSellOK ? scoreRetest : 0)
+execScoreBuyOK = not useExecutionScoring or executionBullScore >= executionMinScore
+execScoreSellOK = not useExecutionScoring or executionBearScore >= executionMinScore
+
+executionBullSignal := enableExecutionSignals and plotBuy and execCanPlot and execHTFBuyOK and execZoneBuyOK and execStructBuyOK and execCandleBuyOK and execSpaceBuyOK and execLateBuyOK and execBosBuyOK and execRetestBuyOK and execScoreBuyOK
+executionBearSignal := enableExecutionSignals and plotSell and execCanPlot and execHTFSellOK and execZoneSellOK and execStructSellOK and execCandleSellOK and execSpaceSellOK and execLateSellOK and execBosSellOK and execRetestSellOK and execScoreSellOK
+executionBullConfirmed := executionBullSignal and barstate.isconfirmed
+executionBearConfirmed := executionBearSignal and barstate.isconfirmed
+
+string executionBlockedBuyReason = ""
+if showExecutionDebug and enableExecutionSignals and plotBuy and not executionBullSignal
+    if not execHTFBuyOK
+        executionBlockedBuyReason := f_joinReason(executionBlockedBuyReason, "HTF")
+    if not execZoneBuyOK
+        executionBlockedBuyReason := f_joinReason(executionBlockedBuyReason, "ZONE")
+    if not execStructBuyOK
+        executionBlockedBuyReason := f_joinReason(executionBlockedBuyReason, "STRUCT")
+    if not execCandleBuyOK
+        executionBlockedBuyReason := f_joinReason(executionBlockedBuyReason, "CANDLE")
+    if not execLateBuyOK
+        executionBlockedBuyReason := f_joinReason(executionBlockedBuyReason, "LATE")
+    if not execSpaceBuyOK
+        executionBlockedBuyReason := f_joinReason(executionBlockedBuyReason, "SPACE")
+    if not execBosBuyOK
+        executionBlockedBuyReason := f_joinReason(executionBlockedBuyReason, "BOS")
+    if not execRetestBuyOK
+        executionBlockedBuyReason := f_joinReason(executionBlockedBuyReason, "RETEST")
+    if not execScoreBuyOK
+        executionBlockedBuyReason := f_joinReason(executionBlockedBuyReason, "SCORE")
+
+string executionBlockedSellReason = ""
+if showExecutionDebug and enableExecutionSignals and plotSell and not executionBearSignal
+    if not execHTFSellOK
+        executionBlockedSellReason := f_joinReason(executionBlockedSellReason, "HTF")
+    if not execZoneSellOK
+        executionBlockedSellReason := f_joinReason(executionBlockedSellReason, "ZONE")
+    if not execStructSellOK
+        executionBlockedSellReason := f_joinReason(executionBlockedSellReason, "STRUCT")
+    if not execCandleSellOK
+        executionBlockedSellReason := f_joinReason(executionBlockedSellReason, "CANDLE")
+    if not execLateSellOK
+        executionBlockedSellReason := f_joinReason(executionBlockedSellReason, "LATE")
+    if not execSpaceSellOK
+        executionBlockedSellReason := f_joinReason(executionBlockedSellReason, "SPACE")
+    if not execBosSellOK
+        executionBlockedSellReason := f_joinReason(executionBlockedSellReason, "BOS")
+    if not execRetestSellOK
+        executionBlockedSellReason := f_joinReason(executionBlockedSellReason, "RETEST")
+    if not execScoreSellOK
+        executionBlockedSellReason := f_joinReason(executionBlockedSellReason, "SCORE")
+
+if showExecutionDebug and executionBlockedBuyReason != ""
+    string executionBuyText = executionBlockedBuyReason
+    if showExecutionScoreDebug
+        executionBuyText := executionBuyText + "\nS:" + str.tostring(executionBullScore)
+    label.new(bar_index, low - arrowDistance * 0.7, executionBuyText, color=color.new(color.teal, 0), textcolor=color.white, size=size.tiny)
+
+if showExecutionDebug and executionBlockedSellReason != ""
+    string executionSellText = executionBlockedSellReason
+    if showExecutionScoreDebug
+        executionSellText := executionSellText + "\nS:" + str.tostring(executionBearScore)
+    label.new(bar_index, high + arrowDistance * 0.7, executionSellText, color=color.new(color.maroon, 0), textcolor=color.white, size=size.tiny)
+
+// Sniper layer adds a final high-selectivity gate above execution signals.
+float nearestDemandTop = na
+float nearestSupplyBottom = na
+int demandZoneTouchEstimate = execZoneBuyOK ? f_getTouchedDemandTouches(buyPx) : 0
+int supplyZoneTouchEstimate = execZoneSellOK ? f_getTouchedSupplyTouches(sellPx) : 0
+
+if nearestDemandIdx >= 0 and array.size(demandTopPrices) > nearestDemandIdx
+    nearestDemandTop := array.get(demandTopPrices, nearestDemandIdx)
+    if not execZoneBuyOK and array.size(demandTouchCount) > nearestDemandIdx
+        demandZoneTouchEstimate := array.get(demandTouchCount, nearestDemandIdx)
+
+if nearestSupplyIdx >= 0 and array.size(supplyBottomPrices) > nearestSupplyIdx
+    nearestSupplyBottom := array.get(supplyBottomPrices, nearestSupplyIdx)
+    if not execZoneSellOK and array.size(supplyTouchCount) > nearestSupplyIdx
+        supplyZoneTouchEstimate := array.get(supplyTouchCount, nearestSupplyIdx)
+
+bool sniperBuyNearDemand = execZoneBuyOK or (not na(nearestDemandBottom) and not na(nearestDemandTop) and close >= nearestDemandBottom and close <= nearestDemandTop + maxDistanceFromZoneATR * atrContext)
+bool sniperSellNearSupply = execZoneSellOK or (not na(nearestSupplyTop) and not na(nearestSupplyBottom) and close <= nearestSupplyTop and close >= nearestSupplyBottom - maxDistanceFromZoneATR * atrContext)
+float sniperDemandOrigin = na(execDemandOrigin) ? nearestDemandBottom : execDemandOrigin
+float sniperSupplyOrigin = na(execSupplyOrigin) ? nearestSupplyTop : execSupplyOrigin
+float sniperDistDemandOrigin = na(sniperDemandOrigin) or atrContext <= 0 ? 0.0 : math.abs(close - sniperDemandOrigin) / atrContext
+float sniperDistSupplyOrigin = na(sniperSupplyOrigin) or atrContext <= 0 ? 0.0 : math.abs(sniperSupplyOrigin - close) / atrContext
+bool sniperFreshDemandOK = not preferFreshZones or demandZoneTouchEstimate <= maxZoneTouches
+bool sniperFreshSupplyOK = not preferFreshZones or supplyZoneTouchEstimate <= maxZoneTouches
+sniperZoneBuyOK = not enableStrictZoneEnforcement or (sniperBuyNearDemand and sniperDistDemandOrigin <= maxDistanceFromZoneATR and sniperFreshDemandOK)
+sniperZoneSellOK = not enableStrictZoneEnforcement or (sniperSellNearSupply and sniperDistSupplyOrigin <= maxDistanceFromZoneATR and sniperFreshSupplyOK)
+
+float rangeWidthATR = atrContext > 0 ? (rangeHigh - rangeLow) / atrContext : 0.0
+float directionalProgressATR = atrContext > 0 ? math.abs(close - rangeCloseReference) / atrContext : 0.0
+float rangeSlopeProgressATR = atrContext > 0 ? math.abs(ema - rangeEmaReference) / atrContext : 0.0
+int alternatingCandles = 0
+float overlapRatioSum = 0.0
+for i = 0 to rangeLookback - 2
+    bool curBull = close[i] > open[i]
+    bool curBear = close[i] < open[i]
+    bool prevBull = close[i + 1] > open[i + 1]
+    bool prevBear = close[i + 1] < open[i + 1]
+    if (curBull and prevBear) or (curBear and prevBull)
+        alternatingCandles += 1
+    float overlapHigh = math.min(high[i], high[i + 1])
+    float overlapLow = math.max(low[i], low[i + 1])
+    float overlapRange = math.max(0.0, overlapHigh - overlapLow)
+    float referenceRange = math.max(high[i + 1] - low[i + 1], syminfo.mintick)
+    overlapRatioSum += overlapRange / referenceRange
+float averageOverlapPct = rangeLookback > 1 ? overlapRatioSum / (rangeLookback - 1) : 0.0
+bool marketIsRanging = enableRangeFilter and (
+    rangeWidthATR < minRangeATR or
+    directionalProgressATR < minDirectionalProgressATR or
+    alternatingCandles > maxAlternatingCandles or
+    averageOverlapPct > maxOverlapPct or
+    rangeSlopeProgressATR < rangeSlopeATR
+)
+sniperRangeBuyOK = not enableRangeFilter or not marketIsRanging
+sniperRangeSellOK = not enableRangeFilter or not marketIsRanging
+
+// Sniper BOS uses stricter, more meaningful candidate swings than the execution layer.
+var float previousSniperHigh = na
+var float lastSniperHigh = na
+var float previousSniperLow = na
+var float lastSniperLow = na
+var float sniperBullBosLevel = na
+var float sniperBearBosLevel = na
+var int sniperBullBosLevelBar = na
+var int sniperBearBosLevelBar = na
+var float activeSniperBullBreakLevel = na
+var float activeSniperBearBreakLevel = na
+var int activeSniperBullBreakBar = na
+var int activeSniperBearBreakBar = na
+var bool sniperBullRetested = false
+var bool sniperBearRetested = false
+
+if not na(sniperPivotHigh)
+    previousSniperHigh := lastSniperHigh
+    lastSniperHigh := sniperPivotHigh
+    bool bearishPrep = not sniperRequireStructureShiftBeforeBOS or (not na(previousSniperLow) and not na(lastSniperLow) and lastSniperLow < previousSniperLow)
+    if not na(previousSniperHigh)
+        if sniperPivotHigh < previousSniperHigh and bearishPrep
+            sniperBullBosLevel := sniperPivotHigh
+            sniperBullBosLevelBar := bar_index - sniperBosLookback
+        else if sniperPivotHigh >= previousSniperHigh
+            sniperBullBosLevel := na
+            sniperBullBosLevelBar := na
+
+if not na(sniperPivotLow)
+    previousSniperLow := lastSniperLow
+    lastSniperLow := sniperPivotLow
+    bool bullishPrep = not sniperRequireStructureShiftBeforeBOS or (not na(previousSniperHigh) and not na(lastSniperHigh) and lastSniperHigh > previousSniperHigh)
+    if not na(previousSniperLow)
+        if sniperPivotLow > previousSniperLow and bullishPrep
+            sniperBearBosLevel := sniperPivotLow
+            sniperBearBosLevelBar := bar_index - sniperBosLookback
+        else if sniperPivotLow <= previousSniperLow
+            sniperBearBosLevel := na
+            sniperBearBosLevelBar := na
+
+float sniperBuyBreakSource = sniperBosBreakMode == "Close" ? close : high
+float sniperSellBreakSource = sniperBosBreakMode == "Close" ? close : low
+float sniperBuyBreakSourcePrev = nz(sniperBuyBreakSource[1], sniperBuyBreakSource)
+float sniperSellBreakSourcePrev = nz(sniperSellBreakSource[1], sniperSellBreakSource)
+sniperBosBuyBreakNow = enableSniperBOS and not na(sniperBullBosLevel) and bar_index > sniperBullBosLevelBar and sniperBuyBreakSource > sniperBullBosLevel and sniperBuyBreakSourcePrev <= sniperBullBosLevel
+sniperBosSellBreakNow = enableSniperBOS and not na(sniperBearBosLevel) and bar_index > sniperBearBosLevelBar and sniperSellBreakSource < sniperBearBosLevel and sniperSellBreakSourcePrev >= sniperBearBosLevel
+
+if sniperBosBuyBreakNow
+    activeSniperBullBreakLevel := sniperBullBosLevel
+    activeSniperBullBreakBar := bar_index
+    sniperBullRetested := false
+
+if sniperBosSellBreakNow
+    activeSniperBearBreakLevel := sniperBearBosLevel
+    activeSniperBearBreakBar := bar_index
+    sniperBearRetested := false
+
+float sniperRetestTolerance = sniperRetestToleranceATR * atrContext
+bool sniperBullRetestTouch = not na(activeSniperBullBreakLevel) and low <= activeSniperBullBreakLevel + sniperRetestTolerance and close >= activeSniperBullBreakLevel - sniperRetestTolerance
+bool sniperBearRetestTouch = not na(activeSniperBearBreakLevel) and high >= activeSniperBearBreakLevel - sniperRetestTolerance and close <= activeSniperBearBreakLevel + sniperRetestTolerance
+
+if enableSniperRetest and not na(activeSniperBullBreakBar) and not na(activeSniperBullBreakLevel)
+    if bar_index > activeSniperBullBreakBar and (bar_index - activeSniperBullBreakBar) <= sniperRetestWindow and sniperBullRetestTouch
+        sniperBullRetested := true
+    if (bar_index - activeSniperBullBreakBar) > sniperRetestWindow
+        activeSniperBullBreakLevel := na
+        activeSniperBullBreakBar := na
+        sniperBullRetested := false
+
+if enableSniperRetest and not na(activeSniperBearBreakBar) and not na(activeSniperBearBreakLevel)
+    if bar_index > activeSniperBearBreakBar and (bar_index - activeSniperBearBreakBar) <= sniperRetestWindow and sniperBearRetestTouch
+        sniperBearRetested := true
+    if (bar_index - activeSniperBearBreakBar) > sniperRetestWindow
+        activeSniperBearBreakLevel := na
+        activeSniperBearBreakBar := na
+        sniperBearRetested := false
+
+sniperCandleBuyOK = not enableSniperCandleFilter or f_sniperBullCandle(atrContext, sniperRequireMinorBreak)
+sniperCandleSellOK = not enableSniperCandleFilter or f_sniperBearCandle(atrContext, sniperRequireMinorBreak)
+sniperBOSBuyOK = not enableSniperBOS or sniperBosBuyBreakNow or (enableSniperRetest and sniperBullRetested)
+sniperBOSSellOK = not enableSniperBOS or sniperBosSellBreakNow or (enableSniperRetest and sniperBearRetested)
+sniperRetestBuyOK = not enableSniperBOS or not enableSniperRetest or (sniperBullRetested and (not sniperRetestRequireTriggerCandle or sniperCandleBuyOK))
+sniperRetestSellOK = not enableSniperBOS or not enableSniperRetest or (sniperBearRetested and (not sniperRetestRequireTriggerCandle or sniperCandleSellOK))
+
+float sniperPostBosTravelBuy = not na(activeSniperBullBreakLevel) and atrContext > 0 ? math.max(close - activeSniperBullBreakLevel, 0.0) / atrContext : 0.0
+float sniperPostBosTravelSell = not na(activeSniperBearBreakLevel) and atrContext > 0 ? math.max(activeSniperBearBreakLevel - close, 0.0) / atrContext : 0.0
+sniperLateBuyOK = not enableSniperLateEntryFilter or (
+    execDistEMA <= sniperMaxDistFromEMAATR and
+    sniperDistDemandOrigin <= sniperMaxDistFromZoneATR and
+    impulsePos <= sniperMaxImpulsePct and
+    bullishCount <= sniperMaxSameColorCandles and
+    sniperPostBosTravelBuy <= sniperMaxPostBosTravelATR
+)
+sniperLateSellOK = not enableSniperLateEntryFilter or (
+    execDistEMA <= sniperMaxDistFromEMAATR and
+    sniperDistSupplyOrigin <= sniperMaxDistFromZoneATR and
+    impulsePos >= (1.0 - sniperMaxImpulsePct) and
+    bearishCount <= sniperMaxSameColorCandles and
+    sniperPostBosTravelSell <= sniperMaxPostBosTravelATR
+)
+
+bool sniperAtrSpaceBuyOK = execBuySpace >= sniperMinSpaceATR * atrContext
+bool sniperAtrSpaceSellOK = execSellSpace >= sniperMinSpaceATR * atrContext
+bool sniperRRSpaceBuyOK = execBuySpace >= execBuyRisk * sniperMinSpaceRR
+bool sniperRRSpaceSellOK = execSellSpace >= execSellRisk * sniperMinSpaceRR
+sniperSpaceBuyOK = not enableSniperSpaceFilter or (sniperRequireBothSpaceChecks ? (sniperAtrSpaceBuyOK and sniperRRSpaceBuyOK) : (sniperAtrSpaceBuyOK or sniperRRSpaceBuyOK))
+sniperSpaceSellOK = not enableSniperSpaceFilter or (sniperRequireBothSpaceChecks ? (sniperAtrSpaceSellOK and sniperRRSpaceSellOK) : (sniperAtrSpaceSellOK or sniperRRSpaceSellOK))
+
+int sniperBullScore = (execHTFBuyOK ? sniperScoreHTF : 0) + (sniperZoneBuyOK ? sniperScoreZone : 0) + (execStructBuyOK ? sniperScoreStructure : 0) + (sniperBOSBuyOK ? sniperScoreBOS : 0) + (sniperRetestBuyOK ? sniperScoreRetest : 0) + (sniperCandleBuyOK ? sniperScoreCandle : 0) + (sniperSpaceBuyOK ? sniperScoreSpace : 0) + (sniperLateBuyOK ? sniperScoreLate : 0) + (sniperRangeBuyOK ? sniperScoreRange : 0) + (sniperFreshDemandOK ? sniperScoreFreshZone : 0)
+int sniperBearScore = (execHTFSellOK ? sniperScoreHTF : 0) + (sniperZoneSellOK ? sniperScoreZone : 0) + (execStructSellOK ? sniperScoreStructure : 0) + (sniperBOSSellOK ? sniperScoreBOS : 0) + (sniperRetestSellOK ? sniperScoreRetest : 0) + (sniperCandleSellOK ? sniperScoreCandle : 0) + (sniperSpaceSellOK ? sniperScoreSpace : 0) + (sniperLateSellOK ? sniperScoreLate : 0) + (sniperRangeSellOK ? sniperScoreRange : 0) + (sniperFreshSupplyOK ? sniperScoreFreshZone : 0)
+sniperScoreBuyOK = not enableSniperScoring or sniperBullScore >= sniperMinScore
+sniperScoreSellOK = not enableSniperScoring or sniperBearScore >= sniperMinScore
+
+sniperBullSignal := enableSniperSignals and executionBullSignal and execHTFBuyOK and sniperZoneBuyOK and execStructBuyOK and sniperBOSBuyOK and sniperRetestBuyOK and sniperCandleBuyOK and sniperLateBuyOK and sniperSpaceBuyOK and sniperRangeBuyOK and sniperScoreBuyOK
+sniperBearSignal := enableSniperSignals and executionBearSignal and execHTFSellOK and sniperZoneSellOK and execStructSellOK and sniperBOSSellOK and sniperRetestSellOK and sniperCandleSellOK and sniperLateSellOK and sniperSpaceSellOK and sniperRangeSellOK and sniperScoreSellOK
+sniperBullConfirmed := sniperBullSignal and barstate.isconfirmed
+sniperBearConfirmed := sniperBearSignal and barstate.isconfirmed
+
+bool buyReadySignal = false
+bool sellReadySignal = false
+
+// READY can confirm on the setup bar itself or the next confirmed bar, but only once per setup.
+var bool pendingBuyEntryConfirmation = false
+var bool pendingSellEntryConfirmation = false
+var int pendingBuySetupBar = na
+var int pendingSellSetupBar = na
+var int lastBuyReadySetupBar = na
+var int lastSellReadySetupBar = na
+
+if enableEntryConfirmation
+    bool buySameBarReady = plotBuy and barstate.isconfirmed and f_entryConfirmBullCandle() and lastBuyReadySetupBar != bar_index
+    bool sellSameBarReady = plotSell and barstate.isconfirmed and f_entryConfirmBearCandle() and lastSellReadySetupBar != bar_index
+
+    if pendingBuyEntryConfirmation
+        if barstate.isconfirmed and bar_index == pendingBuySetupBar + 1
+            bool buyNextBarReady = f_entryConfirmBullCandle() and lastBuyReadySetupBar != pendingBuySetupBar
+            buyReadySignal := buyNextBarReady
+            if buyNextBarReady
+                lastBuyReadySetupBar := pendingBuySetupBar
+            pendingBuyEntryConfirmation := false
+            pendingBuySetupBar := na
+        else if bar_index > pendingBuySetupBar + 1
+            pendingBuyEntryConfirmation := false
+            pendingBuySetupBar := na
+
+    if pendingSellEntryConfirmation
+        if barstate.isconfirmed and bar_index == pendingSellSetupBar + 1
+            bool sellNextBarReady = f_entryConfirmBearCandle() and lastSellReadySetupBar != pendingSellSetupBar
+            sellReadySignal := sellNextBarReady
+            if sellNextBarReady
+                lastSellReadySetupBar := pendingSellSetupBar
+            pendingSellEntryConfirmation := false
+            pendingSellSetupBar := na
+        else if bar_index > pendingSellSetupBar + 1
+            pendingSellEntryConfirmation := false
+            pendingSellSetupBar := na
+
+    if buySameBarReady
+        buyReadySignal := true
+        lastBuyReadySetupBar := bar_index
+        pendingBuyEntryConfirmation := false
+        pendingBuySetupBar := na
+    else if plotBuy
+        pendingBuyEntryConfirmation := true
+        pendingBuySetupBar := bar_index
+
+    if sellSameBarReady
+        sellReadySignal := true
+        lastSellReadySetupBar := bar_index
+        pendingSellEntryConfirmation := false
+        pendingSellSetupBar := na
+    else if plotSell
+        pendingSellEntryConfirmation := true
+        pendingSellSetupBar := bar_index
+else
+    pendingBuyEntryConfirmation := false
+    pendingSellEntryConfirmation := false
+    pendingBuySetupBar := na
+    pendingSellSetupBar := na
+
+// Calculate TP/SL for confirmed sniper signals using the signal candle itself
+string tickerUpper = str.upper(syminfo.ticker)
+string tickerIdUpper = str.upper(syminfo.tickerid)
+bool isForexInstrument = syminfo.type == "forex"
+bool isCryptoInstrument = syminfo.type == "crypto"
+bool isXAUInstrument = str.contains(tickerUpper, "XAU") or str.contains(tickerIdUpper, "XAU")
+
+float spreadPrice = f_getSpreadPrice()
+float manualBufferPrice = math.max(tpSlBufferPips, 0.0) * syminfo.mintick
+float adaptiveBufferPrice = isXAUInstrument ? atrForTPSL * 0.10 : isForexInstrument ? math.max(atrForTPSL * 0.10, spreadPrice * 1.5) : isCryptoInstrument ? atrForTPSL * 0.15 : manualBufferPrice
+float finalBufferPrice = f_roundToTick(math.max(adaptiveBufferPrice + manualBufferPrice, syminfo.mintick))
+
+float calcEntry = na
+float calcSL = na
+float calcTP1 = na
+float calcTP2 = na
+
+if enableTPSL and plotBuy
+    calcEntry := close
+    float bullCandleSL = f_roundToTick(low - finalBufferPrice)
+    float bullAtrSL = f_roundToTick(close - atrForTPSL * cryptoAtrSlMult)
+    calcSL := isCryptoInstrument ? f_roundToTick(math.min(bullCandleSL, bullAtrSL)) : bullCandleSL
+    float bullRisk = calcEntry - calcSL
+    if bullRisk > 0
+        calcTP1 := f_roundToTick(calcEntry + bullRisk)
+        calcTP2 := f_roundToTick(calcEntry + bullRisk * 2.0)
+
+if enableTPSL and plotSell
+    calcEntry := close
+    float bearCandleSL = f_roundToTick(high + finalBufferPrice)
+    float bearAtrSL = f_roundToTick(close + atrForTPSL * cryptoAtrSlMult)
+    calcSL := isCryptoInstrument ? f_roundToTick(math.max(bearCandleSL, bearAtrSL)) : bearCandleSL
+    float bearRisk = calcSL - calcEntry
+    if bearRisk > 0
+        calcTP1 := f_roundToTick(calcEntry - bearRisk)
+        calcTP2 := f_roundToTick(calcEntry - bearRisk * 2.0)
+
+// TP/SL variables
+float entryPrice = calcEntry
+float slPrice = calcSL
+float tp1Price = calcTP1
+float tp2Price = calcTP2
+
+bool tpSlReady = not na(entryPrice) and not na(slPrice) and not na(tp1Price) and not na(tp2Price)
+bool tpSlOK = not enableTPSL or tpSlReady
+
+string sniperBlockedBuyReason = ""
+if showSniperDebug and enableSniperSignals and executionBullSignal and not sniperBullSignal
+    if not execHTFBuyOK
+        sniperBlockedBuyReason := f_joinReason(sniperBlockedBuyReason, "HTF")
+    if not sniperRangeBuyOK
+        sniperBlockedBuyReason := f_joinReason(sniperBlockedBuyReason, "RANGE")
+    if not sniperZoneBuyOK
+        sniperBlockedBuyReason := f_joinReason(sniperBlockedBuyReason, "ZONE")
+    if not execStructBuyOK
+        sniperBlockedBuyReason := f_joinReason(sniperBlockedBuyReason, "STRUCT")
+    if not sniperBOSBuyOK
+        sniperBlockedBuyReason := f_joinReason(sniperBlockedBuyReason, "BOS")
+    if not sniperRetestBuyOK
+        sniperBlockedBuyReason := f_joinReason(sniperBlockedBuyReason, "RETEST")
+    if not sniperCandleBuyOK
+        sniperBlockedBuyReason := f_joinReason(sniperBlockedBuyReason, "CANDLE")
+    if not sniperLateBuyOK
+        sniperBlockedBuyReason := f_joinReason(sniperBlockedBuyReason, "LATE")
+    if not sniperSpaceBuyOK
+        sniperBlockedBuyReason := f_joinReason(sniperBlockedBuyReason, "SPACE")
+    if not sniperScoreBuyOK
+        sniperBlockedBuyReason := f_joinReason(sniperBlockedBuyReason, "SCORE")
+
+string sniperBlockedSellReason = ""
+if showSniperDebug and enableSniperSignals and executionBearSignal and not sniperBearSignal
+    if not execHTFSellOK
+        sniperBlockedSellReason := f_joinReason(sniperBlockedSellReason, "HTF")
+    if not sniperRangeSellOK
+        sniperBlockedSellReason := f_joinReason(sniperBlockedSellReason, "RANGE")
+    if not sniperZoneSellOK
+        sniperBlockedSellReason := f_joinReason(sniperBlockedSellReason, "ZONE")
+    if not execStructSellOK
+        sniperBlockedSellReason := f_joinReason(sniperBlockedSellReason, "STRUCT")
+    if not sniperBOSSellOK
+        sniperBlockedSellReason := f_joinReason(sniperBlockedSellReason, "BOS")
+    if not sniperRetestSellOK
+        sniperBlockedSellReason := f_joinReason(sniperBlockedSellReason, "RETEST")
+    if not sniperCandleSellOK
+        sniperBlockedSellReason := f_joinReason(sniperBlockedSellReason, "CANDLE")
+    if not sniperLateSellOK
+        sniperBlockedSellReason := f_joinReason(sniperBlockedSellReason, "LATE")
+    if not sniperSpaceSellOK
+        sniperBlockedSellReason := f_joinReason(sniperBlockedSellReason, "SPACE")
+    if not sniperScoreSellOK
+        sniperBlockedSellReason := f_joinReason(sniperBlockedSellReason, "SCORE")
+
+if showSniperDebug and sniperBlockedBuyReason != ""
+    label.new(bar_index, low - arrowDistance * 1.05, sniperBlockedBuyReason + "\nS:" + str.tostring(sniperBullScore), color=color.new(color.green, 70), textcolor=color.white, size=size.tiny)
+
+if showSniperDebug and sniperBlockedSellReason != ""
+    label.new(bar_index, high + arrowDistance * 1.05, sniperBlockedSellReason + "\nS:" + str.tostring(sniperBearScore), color=color.new(color.red, 70), textcolor=color.white, size=size.tiny)
+
+// Update last signal bars ONLY for final plotted signals (post-blockers)
+if plotBuy
+    lastBullSignalBar := bar_index
+
+if plotSell
+    lastBearSignalBar := bar_index
+
+// INVALIDATION TRACKING ARRAYS
+var array<label> buyLabels = array.new<label>()
+var array<int> buyBirthBar = array.new<int>()
+var array<float> buyInvalidateLevel = array.new<float>()
+
+var array<label> sellLabels = array.new<label>()
+var array<int> sellBirthBar = array.new<int>()
+var array<float> sellInvalidateLevel = array.new<float>()
+
+// Plot EMA when showEMA is true AND filterMode uses EMA
+bool useEMAinFilter = filterMode == "EMA Trend" or filterMode == "EMA + RSI" or filterMode == "EMA + Structure"
+plot(useEMAinFilter and showEMA ? ema : na, color=color.gray, linewidth=2, title="Trend EMA")
+
+string alertTrendBias = htfBullBias or execStructBuySeries or close > ema ? "BULLISH" : htfBearBias or execStructSellSeries or close < ema ? "BEARISH" : "NEUTRAL"
+string buyAlertBodyStrength = f_strongBullCandle(atrContext) ? "STRONG" : "WEAK"
+string sellAlertBodyStrength = f_strongBearCandle(atrContext) ? "STRONG" : "WEAK"
+string buyAlertBreakoutState = bosBreakBuyNow ? "CONFIRMED" : useRecentBreakoutConfirm and not breakoutOK_buy ? "FAILED" : "NONE"
+string sellAlertBreakoutState = bosBreakSellNow ? "CONFIRMED" : useRecentBreakoutConfirm and not breakoutOK_sell ? "FAILED" : "NONE"
+string buyAlertRetestState = useExecutionRetest ? (bullRetestPassed ? "DONE" : not na(activeBullBreakBar) ? "PENDING" : "NONE") : "NONE"
+string sellAlertRetestState = useExecutionRetest ? (bearRetestPassed ? "DONE" : not na(activeBearBreakBar) ? "PENDING" : "NONE") : "NONE"
+
+if plotBuy
+    alert(f_buildSetupAlertJson("BUY_ALERT", alertTrendBias, buyAlertBodyStrength, buyAlertBreakoutState, buyAlertRetestState), alert.freq_once_per_bar)
+
+if plotSell
+    alert(f_buildSetupAlertJson("SELL_ALERT", alertTrendBias, sellAlertBodyStrength, sellAlertBreakoutState, sellAlertRetestState), alert.freq_once_per_bar)
+alertcondition(buyReadySignal, title="BUY READY", message="{\"signal\":\"BUY_READY\",\"layer\":\"ready\",\"symbol\":\"{{ticker}}\",\"timeframe\":\"{{interval}}\",\"price\":\"{{close}}\",\"timestamp\":\"{{timenow}}\",\"source\":\"MyAlert_AI_V1.0\",\"trend_bias\":\"BULLISH\",\"setup_type\":\"READY\",\"body_strength\":\"NORMAL\",\"breakout_state\":\"UNKNOWN\",\"retest_state\":\"UNKNOWN\"}")
+alertcondition(sellReadySignal, title="SELL READY", message="{\"signal\":\"SELL_READY\",\"layer\":\"ready\",\"symbol\":\"{{ticker}}\",\"timeframe\":\"{{interval}}\",\"price\":\"{{close}}\",\"timestamp\":\"{{timenow}}\",\"source\":\"MyAlert_AI_V1.0\",\"trend_bias\":\"BEARISH\",\"setup_type\":\"READY\",\"body_strength\":\"NORMAL\",\"breakout_state\":\"UNKNOWN\",\"retest_state\":\"UNKNOWN\"}")
+
+// CONTROLLED TEST MODE: temporary for webhook testing only. Disable in production.
+if testMode and bar_index % 5 == 0
+    string testSignal = testScenario == "TAKE_SELL" or testScenario == "WAIT_SELL" or testScenario == "SKIP_SELL" ? "SELL_READY" : "BUY_READY"
+    string testTrendBias = testScenario == "TAKE_BUY" ? "BULLISH" : testScenario == "TAKE_SELL" ? "BEARISH" : testScenario == "WAIT_BUY" ? "BULLISH" : testScenario == "WAIT_SELL" ? "BEARISH" : testScenario == "SKIP_BUY" ? "BEARISH" : "BULLISH"
+    string testBodyStrength = testScenario == "WAIT_BUY" or testScenario == "WAIT_SELL" ? "WEAK" : "STRONG"
+    string testBreakoutState = testScenario == "SKIP_BUY" or testScenario == "SKIP_SELL" ? "FAILED" : "CONFIRMED"
+    string testRetestState = testScenario == "WAIT_BUY" or testScenario == "WAIT_SELL" ? "PENDING" : "DONE"
+    string testPayload = "{\"signal\":\"" + testSignal + "\",\"layer\":\"ready\",\"symbol\":\"BTCUSD\",\"timeframe\":\"1\",\"price\":\"0\",\"timestamp\":\"TEST_MODE\",\"source\":\"controlled_test_mode\",\"setup_type\":\"READY\",\"trend_bias\":\"" + testTrendBias + "\",\"body_strength\":\"" + testBodyStrength + "\",\"breakout_state\":\"" + testBreakoutState + "\",\"retest_state\":\"" + testRetestState + "\"}"
+    alert(testPayload, alert.freq_once_per_bar)
+
+if executionBullSignal and showExecutionLabels
+    label.new(bar_index, low - arrowDistance * 1.8, "BUY EXEC", style=label.style_label_up, color=color.new(color.lime, 0), textcolor=color.black, size=size.small)
+
+if executionBearSignal and showExecutionLabels
+    label.new(bar_index, high + arrowDistance * 1.8, "SELL EXEC", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+
+if sniperBullSignal and showSniperLabels
+    label.new(bar_index, low - arrowDistance * 2.5, "BUY SNIPER", style=label.style_label_up, color=color.new(color.aqua, 0), textcolor=color.black, size=size.small)
+
+if sniperBearSignal and showSniperLabels
+    label.new(bar_index, high + arrowDistance * 2.5, "SELL SNIPER", style=label.style_label_down, color=color.new(color.fuchsia, 0), textcolor=color.white, size=size.small)
+
+if plotBuy
+    float demandBottom = f_getTouchedDemandBottom(buyPx)
+    if na(demandBottom)
+        demandBottom := low
+    
+    label buyLabel = label.new(
+         x=bar_index,
+         y=low - arrowDistance,
+         text="ALERT!!!",
+         style=label.style_label_up,
+         color=color.yellow,
+         textcolor=color.black,
+         size=size.small
+     )
+    
+    array.push(buyLabels, buyLabel)
+    array.push(buyBirthBar, bar_index)
+    array.push(buyInvalidateLevel, demandBottom)
+    
+    if array.size(buyLabels) > 400
+        label oldestLabel = array.shift(buyLabels)
+        label.delete(oldestLabel)
+        int _ = array.shift(buyBirthBar)
+        float __ = array.shift(buyInvalidateLevel)
+
+    if enableTPSL and tpSlReady
+        int buyDirection = 1
+        float buyEntry = entryPrice
+        float buySL = slPrice
+        float buyTP1 = tp1Price
+        float buyTP2 = tp2Price
+        float buyRiskTop = math.max(buyEntry, buySL)
+        float buyRiskBottom = math.min(buyEntry, buySL)
+        float buyRewardTop = math.max(buyEntry, buyTP2)
+        float buyRewardBottom = math.min(buyEntry, buyTP2)
+
+        box buyRiskBox = box.new(left=bar_index, top=buyRiskTop, right=bar_index, bottom=buyRiskBottom, xloc=xloc.bar_index, border_color=color.new(color.red, 0), bgcolor=color.new(color.red, 82))
+        box buyRewardBox = box.new(left=bar_index, top=buyRewardTop, right=bar_index, bottom=buyRewardBottom, xloc=xloc.bar_index, border_color=color.new(color.lime, 0), bgcolor=color.new(color.lime, 82))
+        line buyEntryLine = line.new(x1=bar_index, y1=buyEntry, x2=bar_index, y2=buyEntry, xloc=xloc.bar_index, color=color.new(color.white, 0), width=2)
+        line buyTP1Line = showTP1 ? line.new(x1=bar_index, y1=buyTP1, x2=bar_index, y2=buyTP1, xloc=xloc.bar_index, color=color.new(color.green, 0), style=line.style_dashed, width=2) : na
+        line buyTP2Line = showTP2 ? line.new(x1=bar_index, y1=buyTP2, x2=bar_index, y2=buyTP2, xloc=xloc.bar_index, color=color.new(color.green, 35), style=line.style_dotted, width=2) : na
+        label buySLLabel = na
+        label buyTP1Label = na
+        label buyTP2Label = na
+        if showTPSLLabels
+            buySLLabel := label.new(x=bar_index, y=buySL, text="SL", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.tiny)
+            buyTP1Label := label.new(x=bar_index, y=buyTP1, text="TP1", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.tiny)
+            buyTP2Label := label.new(x=bar_index, y=buyTP2, text="TP2", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.green, 35), textcolor=color.white, size=size.tiny)
+
+        array.push(tpSlRiskBoxes, buyRiskBox)
+        array.push(tpSlRewardBoxes, buyRewardBox)
+        array.push(tpSlEntryLines, buyEntryLine)
+        array.push(tpSlTP1Lines, buyTP1Line)
+        array.push(tpSlTP2Lines, buyTP2Line)
+        array.push(tpSlSLLabels, buySLLabel)
+        array.push(tpSlTP1Labels, buyTP1Label)
+        array.push(tpSlTP2Labels, buyTP2Label)
+        array.push(tpSlDirections, buyDirection)
+        array.push(tpSlStartBars, bar_index)
+        array.push(tpSlIsActive, true)
+        array.push(tpSlTP1HitStates, false)
+        array.push(tpSlEntryPrices, buyEntry)
+        array.push(tpSlSLPrices, buySL)
+        array.push(tpSlTP1Prices, buyTP1)
+        array.push(tpSlTP2Prices, buyTP2)
+
+if plotSell
+    float supplyTop = f_getTouchedSupplyTop(sellPx)
+    if na(supplyTop)
+        supplyTop := high
+    
+    label sellLabel = label.new(
+         x=bar_index,
+         y=high + arrowDistance,
+         text="ALERT!!!",
+         style=label.style_label_down,
+         color=color.yellow,
+         textcolor=color.black,
+         size=size.small
+     )
+    
+    array.push(sellLabels, sellLabel)
+    array.push(sellBirthBar, bar_index)
+    array.push(sellInvalidateLevel, supplyTop)
+    
+    if array.size(sellLabels) > 400
+        label oldestLabel = array.shift(sellLabels)
+        label.delete(oldestLabel)
+        int _ = array.shift(sellBirthBar)
+        float __ = array.shift(sellInvalidateLevel)
+
+    if enableTPSL and tpSlReady
+        int sellDirection = -1
+        float sellEntry = entryPrice
+        float sellSL = slPrice
+        float sellTP1 = tp1Price
+        float sellTP2 = tp2Price
+        float sellRiskTop = math.max(sellEntry, sellSL)
+        float sellRiskBottom = math.min(sellEntry, sellSL)
+        float sellRewardTop = math.max(sellEntry, sellTP2)
+        float sellRewardBottom = math.min(sellEntry, sellTP2)
+
+        box sellRiskBox = box.new(left=bar_index, top=sellRiskTop, right=bar_index, bottom=sellRiskBottom, xloc=xloc.bar_index, border_color=color.new(color.red, 0), bgcolor=color.new(color.red, 82))
+        box sellRewardBox = box.new(left=bar_index, top=sellRewardTop, right=bar_index, bottom=sellRewardBottom, xloc=xloc.bar_index, border_color=color.new(color.lime, 0), bgcolor=color.new(color.lime, 82))
+        line sellEntryLine = line.new(x1=bar_index, y1=sellEntry, x2=bar_index, y2=sellEntry, xloc=xloc.bar_index, color=color.new(color.white, 0), width=2)
+        line sellTP1Line = showTP1 ? line.new(x1=bar_index, y1=sellTP1, x2=bar_index, y2=sellTP1, xloc=xloc.bar_index, color=color.new(color.green, 0), style=line.style_dashed, width=2) : na
+        line sellTP2Line = showTP2 ? line.new(x1=bar_index, y1=sellTP2, x2=bar_index, y2=sellTP2, xloc=xloc.bar_index, color=color.new(color.green, 35), style=line.style_dotted, width=2) : na
+        label sellSLLabel = na
+        label sellTP1Label = na
+        label sellTP2Label = na
+        if showTPSLLabels
+            sellSLLabel := label.new(x=bar_index, y=sellSL, text="SL", xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.red, 0), textcolor=color.white, size=size.tiny)
+            sellTP1Label := label.new(x=bar_index, y=sellTP1, text="TP1", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.green, 0), textcolor=color.white, size=size.tiny)
+            sellTP2Label := label.new(x=bar_index, y=sellTP2, text="TP2", xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.green, 35), textcolor=color.white, size=size.tiny)
+
+        array.push(tpSlRiskBoxes, sellRiskBox)
+        array.push(tpSlRewardBoxes, sellRewardBox)
+        array.push(tpSlEntryLines, sellEntryLine)
+        array.push(tpSlTP1Lines, sellTP1Line)
+        array.push(tpSlTP2Lines, sellTP2Line)
+        array.push(tpSlSLLabels, sellSLLabel)
+        array.push(tpSlTP1Labels, sellTP1Label)
+        array.push(tpSlTP2Labels, sellTP2Label)
+        array.push(tpSlDirections, sellDirection)
+        array.push(tpSlStartBars, bar_index)
+        array.push(tpSlIsActive, true)
+        array.push(tpSlTP1HitStates, false)
+        array.push(tpSlEntryPrices, sellEntry)
+        array.push(tpSlSLPrices, sellSL)
+        array.push(tpSlTP1Prices, sellTP1)
+        array.push(tpSlTP2Prices, sellTP2)
+
+while array.size(tpSlDirections) > maxHistoricalSetups
+    box oldestRiskBox = array.shift(tpSlRiskBoxes)
+    if not na(oldestRiskBox)
+        box.delete(oldestRiskBox)
+    box oldestRewardBox = array.shift(tpSlRewardBoxes)
+    if not na(oldestRewardBox)
+        box.delete(oldestRewardBox)
+    line oldestEntryLine = array.shift(tpSlEntryLines)
+    if not na(oldestEntryLine)
+        line.delete(oldestEntryLine)
+    line oldestTP1Line = array.shift(tpSlTP1Lines)
+    if not na(oldestTP1Line)
+        line.delete(oldestTP1Line)
+    line oldestTP2Line = array.shift(tpSlTP2Lines)
+    if not na(oldestTP2Line)
+        line.delete(oldestTP2Line)
+    label oldestSLLabel = array.shift(tpSlSLLabels)
+    if not na(oldestSLLabel)
+        label.delete(oldestSLLabel)
+    label oldestTP1Label = array.shift(tpSlTP1Labels)
+    if not na(oldestTP1Label)
+        label.delete(oldestTP1Label)
+    label oldestTP2Label = array.shift(tpSlTP2Labels)
+    if not na(oldestTP2Label)
+        label.delete(oldestTP2Label)
+    int _ = array.shift(tpSlDirections)
+    int __ = array.shift(tpSlStartBars)
+    bool ___ = array.shift(tpSlIsActive)
+    bool ____ = array.shift(tpSlTP1HitStates)
+    float _____ = array.shift(tpSlEntryPrices)
+    float ______ = array.shift(tpSlSLPrices)
+    float _______ = array.shift(tpSlTP1Prices)
+    float ________ = array.shift(tpSlTP2Prices)
+
+if array.size(tpSlDirections) > 0
+    for setupIdx = 0 to array.size(tpSlDirections) - 1
+        bool setupActive = array.get(tpSlIsActive, setupIdx)
+        if setupActive
+            int setupDirection = array.get(tpSlDirections, setupIdx)
+            int setupStartBar = array.get(tpSlStartBars, setupIdx)
+            bool setupTP1Hit = array.get(tpSlTP1HitStates, setupIdx)
+            float setupEntry = array.get(tpSlEntryPrices, setupIdx)
+            float setupSL = array.get(tpSlSLPrices, setupIdx)
+            float setupTP1 = array.get(tpSlTP1Prices, setupIdx)
+            float setupTP2 = array.get(tpSlTP2Prices, setupIdx)
+            int maxTradeBar = setupStartBar + tpSlMaxBars - 1
+            int tradeRightBar = math.min(bar_index, maxTradeBar)
+            bool slHit = false
+            bool tp1HitNow = false
+            bool tp2Hit = false
+            bool canCheckHits = bar_index > setupStartBar
+
+            if canCheckHits
+                if setupDirection == 1
+                    slHit := low <= setupSL
+                    if not slHit
+                        tp1HitNow := high >= setupTP1
+                        tp2Hit := high >= setupTP2
+                else if setupDirection == -1
+                    slHit := high >= setupSL
+                    if not slHit
+                        tp1HitNow := low <= setupTP1
+                        tp2Hit := low <= setupTP2
+
+            if tp1HitNow and not setupTP1Hit
+                setupTP1Hit := true
+                array.set(tpSlTP1HitStates, setupIdx, true)
+                line setupTP1Line = array.get(tpSlTP1Lines, setupIdx)
+                if not na(setupTP1Line)
+                    line.set_color(setupTP1Line, color.new(color.aqua, 0))
+
+            bool reachedMaxBars = bar_index >= maxTradeBar
+            bool tradeEnded = slHit or tp2Hit or reachedMaxBars
+            int finalRightBar = tradeEnded ? (slHit or tp2Hit ? bar_index : maxTradeBar) : tradeRightBar
+
+            box setupRiskBox = array.get(tpSlRiskBoxes, setupIdx)
+            if not na(setupRiskBox)
+                box.set_right(setupRiskBox, finalRightBar)
+            box setupRewardBox = array.get(tpSlRewardBoxes, setupIdx)
+            if not na(setupRewardBox)
+                box.set_right(setupRewardBox, finalRightBar)
+            line setupEntryLine = array.get(tpSlEntryLines, setupIdx)
+            if not na(setupEntryLine)
+                line.set_x2(setupEntryLine, finalRightBar)
+                line.set_y2(setupEntryLine, setupEntry)
+            line setupTP1Line2 = array.get(tpSlTP1Lines, setupIdx)
+            if not na(setupTP1Line2)
+                line.set_x2(setupTP1Line2, finalRightBar)
+                line.set_y2(setupTP1Line2, setupTP1)
+            line setupTP2Line = array.get(tpSlTP2Lines, setupIdx)
+            if not na(setupTP2Line)
+                line.set_x2(setupTP2Line, finalRightBar)
+                line.set_y2(setupTP2Line, setupTP2)
+            label setupSLLabel = array.get(tpSlSLLabels, setupIdx)
+            if not na(setupSLLabel)
+                label.set_x(setupSLLabel, finalRightBar)
+            label setupTP1Label = array.get(tpSlTP1Labels, setupIdx)
+            if not na(setupTP1Label)
+                label.set_x(setupTP1Label, finalRightBar)
+            label setupTP2Label = array.get(tpSlTP2Labels, setupIdx)
+            if not na(setupTP2Label)
+                label.set_x(setupTP2Label, finalRightBar)
+
+            if tradeEnded
+                array.set(tpSlIsActive, setupIdx, false)
+
+// INVALIDATION CHECKING LOGIC
+bool buySignalValidated = false
+bool sellSignalValidated = false
+
+bool canInvalidate = invalidateOnConfirmedClose ? barstate.isconfirmed : true
+
+if enableInvalidation
+    if array.size(buyLabels) > 0
+        int i = array.size(buyLabels) - 1
+        while i >= 0
+            int birthBar = array.get(buyBirthBar, i)
+            float invalidateLevel = array.get(buyInvalidateLevel, i)
+            int barsSinceSignal = bar_index - birthBar
+            
+            if barsSinceSignal >= 1 and barsSinceSignal <= invalidationBars
+                if canInvalidate and close < invalidateLevel
+                    label lbl = array.get(buyLabels, i)
+                    label.delete(lbl)
+                    int tpSlIdx = array.size(tpSlDirections) - 1
+                    while tpSlIdx >= 0
+                        if array.get(tpSlStartBars, tpSlIdx) == birthBar and array.get(tpSlDirections, tpSlIdx) == 1
+                            f_deleteTPSLSetupAt(tpSlIdx)
+                        tpSlIdx -= 1
+                    array.remove(buyLabels, i)
+                    array.remove(buyBirthBar, i)
+                    array.remove(buyInvalidateLevel, i)
+            else if barsSinceSignal > invalidationBars
+                if barsSinceSignal == invalidationBars + 1
+                    buySignalValidated := true
+                array.remove(buyLabels, i)
+                array.remove(buyBirthBar, i)
+                array.remove(buyInvalidateLevel, i)
+            i -= 1
+
+    if array.size(sellLabels) > 0
+        int i = array.size(sellLabels) - 1
+        while i >= 0
+            int birthBar = array.get(sellBirthBar, i)
+            float invalidateLevel = array.get(sellInvalidateLevel, i)
+            int barsSinceSignal = bar_index - birthBar
+            
+            if barsSinceSignal >= 1 and barsSinceSignal <= invalidationBars
+                if canInvalidate and close > invalidateLevel
+                    label lbl = array.get(sellLabels, i)
+                    label.delete(lbl)
+                    int tpSlIdx = array.size(tpSlDirections) - 1
+                    while tpSlIdx >= 0
+                        if array.get(tpSlStartBars, tpSlIdx) == birthBar and array.get(tpSlDirections, tpSlIdx) == -1
+                            f_deleteTPSLSetupAt(tpSlIdx)
+                        tpSlIdx -= 1
+                    array.remove(sellLabels, i)
+                    array.remove(sellBirthBar, i)
+                    array.remove(sellInvalidateLevel, i)
+            else if barsSinceSignal > invalidationBars
+                if barsSinceSignal == invalidationBars + 1
+                    sellSignalValidated := true
+                array.remove(sellLabels, i)
+                array.remove(sellBirthBar, i)
+                array.remove(sellInvalidateLevel, i)
+            i -= 1
+
+
+// Delete broken zones (using price arrays)
+if deleteBrokenZones
+    // Check supply zones (broken if close > supply top)
+    if array.size(supplyTopPrices) > 0
+        i = array.size(supplyTopPrices) - 1
+        while i >= 0
+            float topPrice = array.get(supplyTopPrices, i)
+            if not na(topPrice) and close > topPrice
+                array.remove(supplyTopPrices, i)
+                array.remove(supplyBottomPrices, i)
+                array.remove(supplyIsStrong, i)
+                array.remove(supplyBarIndex, i)
+                array.remove(supplyTouchCount, i)
+                if nearestSupplyIdx == i
+                    nearestSupplyIdx := -1
+                else if nearestSupplyIdx > i
+                    nearestSupplyIdx -= 1
+            i -= 1
+    
+    // Check demand zones (broken if close < demand bottom)
+    if array.size(demandBottomPrices) > 0
+        i = array.size(demandBottomPrices) - 1
+        while i >= 0
+            float bottomPrice = array.get(demandBottomPrices, i)
+            if not na(bottomPrice) and close < bottomPrice
+                array.remove(demandTopPrices, i)
+                array.remove(demandBottomPrices, i)
+                array.remove(demandIsStrong, i)
+                array.remove(demandBarIndex, i)
+                array.remove(demandTouchCount, i)
+                if nearestDemandIdx == i
+                    nearestDemandIdx := -1
+                else if nearestDemandIdx > i
+                    nearestDemandIdx -= 1
+            i -= 1
+
+// Hot zone alerts
+priceNearHotSupply = false
+if nearestSupplyIdx >= 0 and array.size(supplyBottomPrices) > nearestSupplyIdx
+    float bottomPrice = array.get(supplyBottomPrices, nearestSupplyIdx)
+    if not na(bottomPrice)
+        priceNearHotSupply := (bottomPrice - close) <= (atr * 0.2)
+
+priceNearHotDemand = false
+if nearestDemandIdx >= 0 and array.size(demandTopPrices) > nearestDemandIdx
+    float topPrice = array.get(demandTopPrices, nearestDemandIdx)
+    if not na(topPrice)
+        priceNearHotDemand := (close - topPrice) <= (atr * 0.2)
+
+ 

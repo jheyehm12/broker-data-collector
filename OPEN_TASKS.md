@@ -19,6 +19,11 @@ Future work for Broker Data Collector. v1 is intentionally minimal.
 
 - [ ] **Quant Competition Lab sample notebook** — documented import + schema validation
 - [x] **Dataset manifest (`manifest.json`)** — auto-discovery index for QCL
+- [x] **MyAlert research Phase C** — timing + raw candle fields in research CSV
+- [x] **MyAlert research Phase D** — relative + sequence features + MyAlert raw inputs
+- [x] **MyAlert research Phase E** — market structure (Swing High/Low, HH/HL/LH/LL, Trend Bias, Breakout/Retest)
+- [x] **MyAlert research Phase F** — outcome enrichment post-processor (WIN/LOSS/MFE/MAE)
+- [x] **MyAlert research Phase G** — ML-readiness validation
 - [ ] **Optional JSON lines export** — parallel format for programmatic pipelines
 - [x] **Multi-timeframe mode** — collect several TFs per symbol in one run
 

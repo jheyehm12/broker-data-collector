@@ -4,6 +4,13 @@
 # Collected data output
 MQL5/Files/BrokerDataCollector/
 *.csv
+!tests/fixtures/*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
 
 # OS / editor
 Thumbs.db

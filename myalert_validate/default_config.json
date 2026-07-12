@@ -1,0 +1,12 @@
+{
+  "min_rows_per_stream": 100,
+  "min_per_outcome_class": 20,
+  "min_eligible_fraction": 0.70,
+  "correlation_threshold": 0.95,
+  "missing_warning_fraction": 0.05,
+  "missing_fail_fraction": 0.20,
+  "timezone_offset_tolerance_hours": 14,
+  "train_fraction": 0.70,
+  "val_fraction": 0.15,
+  "test_fraction": 0.15
+}

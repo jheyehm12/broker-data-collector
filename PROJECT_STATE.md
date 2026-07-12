@@ -1,48 +1,33 @@
 # PROJECT_STATE
 
 **Project:** Broker Data Collector  
-**Version:** 1.5.5  
-**Status:** Startup symbol validation + batched backfill writes  
-**Last updated:** 2026-06-08
+**Version:** 1.8.0 (EA 1.60 + Phase F/G Python tools)  
+**Status:** MyAlert Phase G complete (ML readiness validation)  
+**Last updated:** 2026-07-13
 
 ## What exists
 
 | Artifact | Status |
 |----------|--------|
-| `BrokerDataCollector.mq5` | Done — multi-TF collector with backfill + manifest |
-| `README.md` | Done — install, attach, CSV path, QCL import |
-| `MASTER_PROMPT.md` | Done — product contract for AI/human contributors |
-| `CHANGELOG.md` | Done |
-| `OPEN_TASKS.md` | Done |
+| `BrokerDataCollector.mq5` | Done — v1.60, full MyAlert research export (59 cols) |
+| `myalert_enrich/` | Done — Phase F outcome enrichment |
+| `myalert_validate/` | Done — Phase G ML readiness validation |
+| `tests/` | Done — 16 unit/integration tests |
+| `README.md` | Done — EA + MyAlert Phases C–G |
 
-## EA capabilities (v1.1)
+## Python pipeline (post-collection)
 
-- Multi-symbol and multi-timeframe collection via comma-separated inputs
-- Configurable timer interval (default 60s)
-- Historical backfill on attach (`EnableBackfill`, `BackfillBars`)
-- Backfill quality summary in journal + `summary_YYYYMMDD.csv`
-- Export formats: `Raw` (broker metadata) or `CompetitionLab` (QCL OHLCV)
-- `manifest.json` for Quant Competition Lab auto-discovery
-- Writes to `MQL5/Files/BrokerDataCollector/`
-- One CSV per symbol/timeframe/calendar day (`SANITIZED_SYMBOL_TIMEFRAME_YYYYMMDD.csv`)
-- Filename symbol sanitization: `# / \ : space` → `_` (broker symbol unchanged for market APIs and CSV row data)
-- CSV header on new files; duplicate candle timestamps skipped
-- Resume after restart by reading last timestamp from daily files
-- Broker/account metadata attached to every row
+1. **Collect** — EA writes research CSV + Raw OHLC (decision-time only in research)
+2. **Enrich** — `python -m myalert_enrich` → outcomes CSV
+3. **Validate** — `python -m myalert_validate` → ML readiness report + eligibility flags
 
 ## Safety posture
 
-- No order or position functions used
-- Read-only market/account queries only
-- Fail-soft per symbol (one bad symbol does not stop others)
-
-## Known limitations
-
-- Symbol names must match broker naming (e.g. `US100` vs `NAS100`)
-- Daily file rollover uses each bar's calendar day (terminal time)
-- Spread/bid/ask sampled at write time, not historical tick replay
-- Backfill limited by broker history depth and `BackfillBars` cap
+- EA unchanged since Phase E
+- No future-derived fields in research CSV
+- No source file modification by Python tools
+- No random splits; chronological ML split only
 
 ## Next recommended steps
 
-See `OPEN_TASKS.md`.
+MyAlert extension phases A–G are complete. See `OPEN_TASKS.md` for general EA improvements.

@@ -1,0 +1,15 @@
+{
+  "tp_sl_model": "atr_multiple",
+  "tp_atr_multiple": 2.0,
+  "sl_atr_multiple": 1.0,
+  "tp_pct": 0.002,
+  "sl_pct": 0.001,
+  "tp_price_distance": 0.00050,
+  "sl_price_distance": 0.00025,
+  "forward_horizon_bars": 20,
+  "same_candle_policy": "both",
+  "entry_price_field": "Close",
+  "direction_field": "Direction",
+  "direction_fallback_field": "Trend Bias",
+  "atr_field": "ATR14"
+}

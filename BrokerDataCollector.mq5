@@ -4,11 +4,27 @@
 //|                     Research / backtesting only — does NOT trade |
 //+------------------------------------------------------------------+
 #property copyright "Broker Data Collector"
-#property version   "1.56"
+#property version   "1.60"
 #property description "Collects broker-specific market data to CSV. No trading."
 
 #define OUTPUT_FOLDER           "BrokerDataCollector"
 #define COMPETITION_LAB_FOLDER  "BrokerDataCollector\\CompetitionLab"
+#define MYALERT_FOLDER          "BrokerDataCollector\\MyAlert"
+#define MYALERT_RESEARCH_HEADER "Timestamp,UTC Timestamp,Broker Timestamp,Symbol,Timeframe,Asset Class,Session,Day of Week,Hour UTC,Open,High,Low,Close,Tick Volume,Real Volume,Spread,Direction,Body Size,Range Size,Upper Wick,Lower Wick,Body-to-Range Ratio,Upper Wick Ratio,Lower Wick Ratio,Average Body 5,Average Body 10,Average Body 20,Current Body Ratio,ATR14,Range-to-ATR,Previous Direction 1,Previous Direction 2,Previous Direction 3,Previous Direction 4,Previous Direction 5,Previous Body Ratio 1,Previous Body Ratio 2,Previous Body Ratio 3,Previous Body Ratio 4,Previous Body Ratio 5,Consecutive Bullish,Consecutive Bearish,Body Expansion,Range Expansion,Swing High,Swing Low,HH,HL,LH,LL,Trend Bias,Breakout State,Retest State,Previous Body,Average Body,Previous Body Ratio,Follow Through,Distance Ratio,Body Strength"
+#define MYALERT_RESEARCH_COLUMNS 59
+#define MYALERT_PHASE_C_COLUMNS  16
+#define MYALERT_LOOKBACK_BARS    80
+#define MYALERT_ATR_PERIOD       14
+#define MYALERT_BODY_STRONG_ATR  0.5
+#define MYALERT_CLOSE_NEAR_EXTREME 0.25
+#define MYALERT_MAX_OPPOSING_WICK_BODY 0.6
+#define MYALERT_SWING_PIVOT_LEN  5
+#define MYALERT_STRUCT_SHORT     10
+#define MYALERT_STRUCT_LONG      25
+#define MYALERT_BOS_PIVOT_LEN    3
+#define MYALERT_BREAKOUT_LOOKBACK 10
+#define MYALERT_RETEST_WINDOW    6
+#define MYALERT_MIN_HISTORY_BARS 36
 #define CSV_HEADER              "timestamp,broker_name,server,account_login,account_type_company,symbol,timeframe,open,high,low,close,tick_volume,bid,ask,spread_points,spread_price,digits,point"
 #define COMPETITION_LAB_HEADER  "Timestamp,Open,High,Low,Close,Volume"
 #define SUMMARY_HEADER          "date,broker,server,symbol,timeframe,bars_written,avg_spread,min_spread,max_spread"
@@ -69,6 +85,7 @@ input int               InpTimerSeconds  = 60;
 input bool              EnableBackfill   = true;
 input int               BackfillBars     = 5000;
 input ENUM_EXPORT_FORMAT ExportFormat    = EXPORT_RAW;
+input bool              EnableMyAlertResearchFeatures = false;
 
 //--- globals
 string          g_symbols[];
@@ -77,6 +94,7 @@ string          g_configured_symbols[];
 SymbolStartupDiagnostic g_symbol_diagnostics[];
 ENUM_TIMEFRAMES g_timeframes[];
 datetime        g_lastWrittenBarTime[];
+datetime        g_lastMyAlertWrittenBarTime[];
 string          g_openFilePaths[];
 
 //+------------------------------------------------------------------+
@@ -928,6 +946,12 @@ int OnInit()
    ArrayResize(g_lastWrittenBarTime, StreamCount());
    ArrayInitialize(g_lastWrittenBarTime, 0);
 
+   if(EnableMyAlertResearchFeatures)
+     {
+      ArrayResize(g_lastMyAlertWrittenBarTime, StreamCount());
+      ArrayInitialize(g_lastMyAlertWrittenBarTime, 0);
+     }
+
    if(!EnsureOutputFolder())
      {
       Print("BrokerDataCollector: failed to create output folder.");
@@ -963,6 +987,9 @@ int OnInit()
            {
             g_lastWrittenBarTime[streamIndex] =
                ReadLastTimestampFromDailyFile(loopSymbol, tf, TimeCurrent());
+            if(EnableMyAlertResearchFeatures)
+               g_lastMyAlertWrittenBarTime[streamIndex] =
+                  ReadLastMyAlertTimestampFromFile(loopSymbol, tf);
            }
 
          Print("BrokerDataCollector: tracking symbol=<", loopSymbol, "> ", TimeframeLabel(tf),
@@ -1054,13 +1081,21 @@ void BackfillSymbol(const int symbolIndex,
      }
 
    int requestBars = MathMin(BackfillBars, available - 1);
+   int lookbackExtra = EnableMyAlertResearchFeatures ? MYALERT_LOOKBACK_BARS : 0;
+   int copyCount = requestBars + lookbackExtra;
 
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
 
-   int copied = CopyRatesForLoopSymbol(loopSymbol, tf, 1, requestBars, rates, "BackfillSymbol");
+   int copied = CopyRatesForLoopSymbol(loopSymbol, tf, 1, copyCount, rates, "BackfillSymbol");
    if(copied < 1)
       return;
+
+   int maxWriteIdx = MathMin(requestBars - 1, copied - 1);
+
+   if(EnableMyAlertResearchFeatures)
+      g_lastMyAlertWrittenBarTime[streamIndex] =
+         ReadLastMyAlertTimestampFromFile(loopSymbol, tf);
 
    int      written        = 0;
    datetime dayAnchor      = 0;
@@ -1071,6 +1106,9 @@ void BackfillSymbol(const int symbolIndex,
 
    for(int i = copied - 1; i >= 0; i--)
      {
+      if(i > maxWriteIdx)
+         continue;
+
       datetime barTime = rates[i].time;
       datetime barDay  = BarDayStart(barTime);
 
@@ -1116,6 +1154,9 @@ void BackfillSymbol(const int symbolIndex,
 
       string row = BuildBarRow(loopSymbol, tf, rates[i]);
       FileWriteString(dayHandle, row + "\r\n");
+
+      if(EnableMyAlertResearchFeatures)
+         AppendMyAlertResearchRow(loopSymbol, tf, rates, i, copied, streamIndex);
 
       int spreadPoints = (int)SymbolInfoInteger(loopSymbol, SYMBOL_SPREAD);
       RecordWrittenBar(stats, barTime, spreadPoints);
@@ -1276,6 +1317,16 @@ void CollectSymbolBar(const int symbolIndex, const int tfIndex)
      }
 
    g_lastWrittenBarTime[streamIndex] = barTime;
+
+   if(EnableMyAlertResearchFeatures)
+     {
+      MqlRates myAlertRates[];
+      ArraySetAsSeries(myAlertRates, true);
+      int myAlertCopied = CopyRatesForLoopSymbol(loopSymbol, tf, 1, MYALERT_LOOKBACK_BARS,
+                                                 myAlertRates, "MyAlert CollectSymbolBar");
+      if(myAlertCopied > 0)
+         AppendMyAlertResearchRow(loopSymbol, tf, myAlertRates, 0, myAlertCopied, streamIndex);
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -1529,7 +1580,13 @@ bool EnsureOutputFolder()
       return false;
 
    if(ExportFormat == EXPORT_COMPETITION_LAB)
-      return EnsureFolder(COMPETITION_LAB_FOLDER);
+     {
+      if(!EnsureFolder(COMPETITION_LAB_FOLDER))
+         return false;
+     }
+
+   if(EnableMyAlertResearchFeatures)
+      return EnsureFolder(MYALERT_FOLDER);
 
    return true;
   }
@@ -1726,6 +1783,931 @@ string CsvEscape(const string value)
   }
 
 //+------------------------------------------------------------------+
+//| MyAlert research filename: MyAlert_SYMBOL_TIMEFRAME_Research.csv |
+//+------------------------------------------------------------------+
+string BuildMyAlertResearchFileName(const string symbol, const ENUM_TIMEFRAMES tf)
+  {
+   return StringFormat("MyAlert_%s_%s_Research.csv",
+                       SanitizeSymbolForFilename(symbol),
+                       TimeframeLabel(tf));
+  }
+
+//+------------------------------------------------------------------+
+//| Full relative path for one MyAlert research CSV                    |
+//+------------------------------------------------------------------+
+string BuildMyAlertResearchFilePath(const string symbol, const ENUM_TIMEFRAMES tf)
+  {
+   return MYALERT_FOLDER + "\\" + BuildMyAlertResearchFileName(symbol, tf);
+  }
+
+//+------------------------------------------------------------------+
+//| True when line is the MyAlert research CSV header                  |
+//+------------------------------------------------------------------+
+bool IsMyAlertResearchHeaderLine(const string line)
+  {
+   return (line == MYALERT_RESEARCH_HEADER ||
+           StringFind(line, "Timestamp,UTC Timestamp,Broker Timestamp") == 0);
+  }
+
+//+------------------------------------------------------------------+
+//| Read last written bar timestamp from MyAlert research file         |
+//+------------------------------------------------------------------+
+datetime ReadLastMyAlertTimestampFromFile(const string loopSymbol, const ENUM_TIMEFRAMES tf)
+  {
+   string filePath = BuildMyAlertResearchFilePath(loopSymbol, tf);
+   if(!FileIsExist(filePath))
+      return 0;
+
+   int handle = OpenFileWithRetry(filePath, FILE_READ | FILE_ANSI,
+                                  "ReadLastMyAlertTimestamp symbol=" + loopSymbol);
+   if(handle == INVALID_HANDLE)
+      return 0;
+
+   datetime lastTime = 0;
+   while(!FileIsEnding(handle))
+     {
+      string line = FileReadString(handle);
+      if(line == "" || IsMyAlertResearchHeaderLine(line))
+         continue;
+
+      int comma = StringFind(line, ",");
+      if(comma < 0)
+         continue;
+
+      datetime ts = StringToTime(StringSubstr(line, 0, comma));
+      if(ts > lastTime)
+         lastTime = ts;
+     }
+
+   CloseTrackedFile(filePath, handle);
+   return lastTime;
+  }
+
+//+------------------------------------------------------------------+
+//| Server-to-UTC offset in seconds at write time                      |
+//| Formula: TimeCurrent() - TimeGMT() (trade server vs UTC)           |
+//+------------------------------------------------------------------+
+int GetServerToUtcOffsetSeconds()
+  {
+   return (int)(TimeCurrent() - TimeGMT());
+  }
+
+//+------------------------------------------------------------------+
+//| Convert broker bar open time to UTC using current server offset    |
+//+------------------------------------------------------------------+
+datetime BarTimeToUtc(const datetime barTime)
+  {
+   return barTime - GetServerToUtcOffsetSeconds();
+  }
+
+//+------------------------------------------------------------------+
+//| Format datetime for MyAlert CSV columns                          |
+//+------------------------------------------------------------------+
+string FormatMyAlertTimestamp(const datetime value)
+  {
+   return TimeToString(value, TIME_DATE | TIME_SECONDS);
+  }
+
+//+------------------------------------------------------------------+
+//| English day-of-week from MqlDateTime.day_of_week (0=Sunday)      |
+//+------------------------------------------------------------------+
+string DayOfWeekLabel(const int dayOfWeek)
+  {
+   switch(dayOfWeek)
+     {
+      case 0: return "Sunday";
+      case 1: return "Monday";
+      case 2: return "Tuesday";
+      case 3: return "Wednesday";
+      case 4: return "Thursday";
+      case 5: return "Friday";
+      case 6: return "Saturday";
+     }
+   return "Unknown";
+  }
+
+//+------------------------------------------------------------------+
+//| UTC session label from bar UTC hour (priority order documented)    |
+//| London-NY Overlap: 13-16 UTC | London: 08-12 | New York: 17-21    |
+//| Asia: 22-07 UTC | Off-hours: any remaining hour                    |
+//+------------------------------------------------------------------+
+string ClassifySessionUtc(const int hourUtc)
+  {
+   if(hourUtc >= 13 && hourUtc < 17)
+      return "London-NY Overlap";
+   if(hourUtc >= 8 && hourUtc < 13)
+      return "London";
+   if(hourUtc >= 17 && hourUtc < 22)
+      return "New York";
+   if(hourUtc >= 22 || hourUtc < 8)
+      return "Asia";
+   return "Off-hours";
+  }
+
+//+------------------------------------------------------------------+
+//| Asset class heuristic from broker symbol name                      |
+//+------------------------------------------------------------------+
+string ClassifyAssetClass(const string symbol)
+  {
+   string key = symbol;
+   StringToUpper(key);
+
+   if(StringFind(key, "BTC") >= 0 || StringFind(key, "ETH") >= 0 ||
+      StringFind(key, "LTC") >= 0 || StringFind(key, "XRP") >= 0 ||
+      StringFind(key, "CRYPTO") >= 0)
+      return "Crypto";
+
+   if(StringFind(key, "XAU") >= 0 || StringFind(key, "GOLD") >= 0 ||
+      StringFind(key, "XAG") >= 0 || StringFind(key, "SILVER") >= 0)
+      return "Commodity";
+
+   if(StringFind(key, "US100") >= 0 || StringFind(key, "NAS") >= 0 ||
+      StringFind(key, "USTEC") >= 0 || StringFind(key, "US30") >= 0 ||
+      StringFind(key, "US500") >= 0 || StringFind(key, "SPX") >= 0 ||
+      StringFind(key, "DAX") >= 0 || StringFind(key, "FTSE") >= 0 ||
+      StringFind(key, "JP225") >= 0 || StringFind(key, "NIK") >= 0)
+      return "Index";
+
+   ENUM_SYMBOL_CALC_MODE calcMode =
+      (ENUM_SYMBOL_CALC_MODE)SymbolInfoInteger(symbol, SYMBOL_TRADE_CALC_MODE);
+   if(calcMode == SYMBOL_CALC_MODE_FOREX || calcMode == SYMBOL_CALC_MODE_FOREX_NO_LEVERAGE)
+      return "Forex";
+
+   return "Other";
+  }
+
+//+------------------------------------------------------------------+
+//| Safe division helper                                             |
+//+------------------------------------------------------------------+
+double SafeDiv(const double numerator, const double denominator)
+  {
+   if(denominator == 0.0)
+      return 0.0;
+   return numerator / denominator;
+  }
+
+//+------------------------------------------------------------------+
+//| Candle body size (absolute open-close)                           |
+//+------------------------------------------------------------------+
+double GetBarBodySize(const MqlRates &bar)
+  {
+   return MathAbs(bar.close - bar.open);
+  }
+
+//+------------------------------------------------------------------+
+//| Candle range (high-low)                                          |
+//+------------------------------------------------------------------+
+double GetBarRangeSize(const MqlRates &bar)
+  {
+   return bar.high - bar.low;
+  }
+
+//+------------------------------------------------------------------+
+//| Direction sign: 1 bullish, -1 bearish, 0 doji                    |
+//+------------------------------------------------------------------+
+int GetBarDirectionSign(const MqlRates &bar)
+  {
+   if(bar.close > bar.open)
+      return 1;
+   if(bar.close < bar.open)
+      return -1;
+   return 0;
+  }
+
+//+------------------------------------------------------------------+
+//| Body-to-range ratio for one bar                                  |
+//+------------------------------------------------------------------+
+double GetBarBodyRatio(const MqlRates &bar)
+  {
+   return SafeDiv(GetBarBodySize(bar), GetBarRangeSize(bar));
+  }
+
+//+------------------------------------------------------------------+
+//| True range for bar at index (series: idx+1 is previous bar)      |
+//+------------------------------------------------------------------+
+double CalcTrueRangeAt(const MqlRates &rates[], const int idx, const int barsCount)
+  {
+   double highLow = rates[idx].high - rates[idx].low;
+   if(idx + 1 >= barsCount)
+      return highLow;
+
+   double highClose = MathAbs(rates[idx].high - rates[idx + 1].close);
+   double lowClose  = MathAbs(rates[idx].low - rates[idx + 1].close);
+   return MathMax(highLow, MathMax(highClose, lowClose));
+  }
+
+//+------------------------------------------------------------------+
+//| Simple ATR(N): SMA of true range over N bars ending at barIdx     |
+//+------------------------------------------------------------------+
+double CalcAtrSma(const MqlRates &rates[],
+                  const int barIdx,
+                  const int barsCount,
+                  const int period)
+  {
+   if(period < 1 || barIdx + period > barsCount)
+      return 0.0;
+
+   double sum = 0.0;
+   for(int j = barIdx; j < barIdx + period; j++)
+      sum += CalcTrueRangeAt(rates, j, barsCount);
+
+   return sum / period;
+  }
+
+//+------------------------------------------------------------------+
+//| Average body over N bars starting at barIdx (current + older)    |
+//+------------------------------------------------------------------+
+double CalcAverageBody(const MqlRates &rates[],
+                       const int barIdx,
+                       const int barsCount,
+                       const int period)
+  {
+   if(period < 1 || barIdx + period > barsCount)
+      return 0.0;
+
+   double sum = 0.0;
+   for(int j = barIdx; j < barIdx + period; j++)
+      sum += GetBarBodySize(rates[j]);
+
+   return sum / period;
+  }
+
+//+------------------------------------------------------------------+
+//| Count consecutive bars with direction sign from barIdx backward  |
+//+------------------------------------------------------------------+
+int CountConsecutiveDirection(const MqlRates &rates[],
+                              const int barIdx,
+                              const int barsCount,
+                              const int directionSign)
+  {
+   int count = 0;
+   for(int j = barIdx; j < barsCount; j++)
+     {
+      if(GetBarDirectionSign(rates[j]) != directionSign)
+         break;
+      count++;
+     }
+   return count;
+  }
+
+//+------------------------------------------------------------------+
+//| Expansion ratio: current / previous (0 if previous is 0)         |
+//| Classification: >1 Expansion, <1 Contraction, =1 Neutral           |
+//+------------------------------------------------------------------+
+double CalcExpansionRatio(const double currentValue, const double previousValue)
+  {
+   return SafeDiv(currentValue, previousValue);
+  }
+
+//+------------------------------------------------------------------+
+//| MyAlert body strength code: 2=STRONG, 1=NEUTRAL, 0=WEAK           |
+//+------------------------------------------------------------------+
+int CalcMyAlertBodyStrengthCode(const MqlRates &bar, const double atr14)
+  {
+   double body      = GetBarBodySize(bar);
+   double range     = GetBarRangeSize(bar);
+   double upperWick = bar.high - MathMax(bar.close, bar.open);
+   double lowerWick = MathMin(bar.close, bar.open) - bar.low;
+
+   if(bar.close > bar.open)
+     {
+      bool nearHigh = SafeDiv(bar.high - bar.close, range) <= MYALERT_CLOSE_NEAR_EXTREME;
+      bool wickOk   = body > 0.0 && SafeDiv(upperWick, body) <= MYALERT_MAX_OPPOSING_WICK_BODY;
+      if(body >= atr14 * MYALERT_BODY_STRONG_ATR && nearHigh && wickOk)
+         return 2;
+      return 0;
+     }
+
+   if(bar.close < bar.open)
+     {
+      bool nearLow = SafeDiv(bar.close - bar.low, range) <= MYALERT_CLOSE_NEAR_EXTREME;
+      bool wickOk  = body > 0.0 && SafeDiv(lowerWick, body) <= MYALERT_MAX_OPPOSING_WICK_BODY;
+      if(body >= atr14 * MYALERT_BODY_STRONG_ATR && nearLow && wickOk)
+         return 2;
+      return 0;
+     }
+
+   return 1;
+  }
+
+//+------------------------------------------------------------------+
+//| Follow-through: 1 when direction continues and body grows        |
+//+------------------------------------------------------------------+
+int CalcFollowThrough(const MqlRates &rates[], const int barIdx, const int barsCount)
+  {
+   if(barIdx + 1 >= barsCount)
+      return 0;
+
+   int  curDir  = GetBarDirectionSign(rates[barIdx]);
+   int  prevDir = GetBarDirectionSign(rates[barIdx + 1]);
+   if(curDir == 0 || curDir != prevDir)
+      return 0;
+
+   double curBody  = GetBarBodySize(rates[barIdx]);
+   double prevBody = GetBarBodySize(rates[barIdx + 1]);
+   return (curBody > prevBody) ? 1 : 0;
+  }
+
+//+------------------------------------------------------------------+
+//| Phase E market structure snapshot for one closed bar               |
+//+------------------------------------------------------------------+
+struct MyAlertMarketStructure
+  {
+   double swingHigh;
+   double swingLow;
+   int    hh;
+   int    hl;
+   int    lh;
+   int    ll;
+   int    trendBias;
+   int    breakoutState;
+   int    retestState;
+  };
+
+//+------------------------------------------------------------------+
+//| Pivot high valid at pivotIdx (left/right = MyAlert swing length)   |
+//| Series: newer bars have lower index; confirmed at evalBarIdx when |
+//| pivotIdx - evalBarIdx >= right (right bars closed after pivot).    |
+//+------------------------------------------------------------------+
+bool IsPivotHighAt(const MqlRates &rates[],
+                   const int pivotIdx,
+                   const int left,
+                   const int right,
+                   const int evalBarIdx,
+                   const int barsCount)
+  {
+   if(pivotIdx <= evalBarIdx)
+      return false;
+   if(pivotIdx - evalBarIdx < right)
+      return false;
+   if(pivotIdx + left >= barsCount)
+      return false;
+
+   double pivotValue = rates[pivotIdx].high;
+   for(int k = pivotIdx - right; k <= pivotIdx + left; k++)
+     {
+      if(k == pivotIdx)
+         continue;
+      if(rates[k].high > pivotValue)
+         return false;
+     }
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| Pivot low valid at pivotIdx                                        |
+//+------------------------------------------------------------------+
+bool IsPivotLowAt(const MqlRates &rates[],
+                  const int pivotIdx,
+                  const int left,
+                  const int right,
+                  const int evalBarIdx,
+                  const int barsCount)
+  {
+   if(pivotIdx <= evalBarIdx)
+      return false;
+   if(pivotIdx - evalBarIdx < right)
+      return false;
+   if(pivotIdx + left >= barsCount)
+      return false;
+
+   double pivotValue = rates[pivotIdx].low;
+   for(int k = pivotIdx - right; k <= pivotIdx + left; k++)
+     {
+      if(k == pivotIdx)
+         continue;
+      if(rates[k].low < pivotValue)
+         return false;
+     }
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| Highest high over N bars from barIdx (current + older)             |
+//+------------------------------------------------------------------+
+double CalcHighestHigh(const MqlRates &rates[],
+                       const int barIdx,
+                       const int barsCount,
+                       const int period)
+  {
+   if(period < 1 || barIdx + period > barsCount)
+      return 0.0;
+
+   double highest = rates[barIdx].high;
+   for(int k = barIdx; k < barIdx + period; k++)
+      highest = MathMax(highest, rates[k].high);
+   return highest;
+  }
+
+//+------------------------------------------------------------------+
+//| Lowest low over N bars from barIdx (current + older)               |
+//+------------------------------------------------------------------+
+double CalcLowestLow(const MqlRates &rates[],
+                     const int barIdx,
+                     const int barsCount,
+                     const int period)
+  {
+   if(period < 1 || barIdx + period > barsCount)
+      return 0.0;
+
+   double lowest = rates[barIdx].low;
+   for(int k = barIdx; k < barIdx + period; k++)
+      lowest = MathMin(lowest, rates[k].low);
+   return lowest;
+  }
+
+//+------------------------------------------------------------------+
+//| Two most recent confirmed swing highs/lows as of evalBarIdx        |
+//+------------------------------------------------------------------+
+void FindRecentSwingLevels(const MqlRates &rates[],
+                           const int evalBarIdx,
+                           const int barsCount,
+                           const int pivotLen,
+                           double &lastSwingHigh,
+                           double &prevSwingHigh,
+                           double &lastSwingLow,
+                           double &prevSwingLow)
+  {
+   lastSwingHigh = 0.0;
+   prevSwingHigh = 0.0;
+   lastSwingLow  = 0.0;
+   prevSwingLow  = 0.0;
+
+   int swingHighCount = 0;
+   int swingLowCount  = 0;
+   int minPivotIdx    = evalBarIdx + pivotLen;
+   int maxPivotIdx    = barsCount - pivotLen - 1;
+
+   for(int p = minPivotIdx; p <= maxPivotIdx; p++)
+     {
+      if(IsPivotHighAt(rates, p, pivotLen, pivotLen, evalBarIdx, barsCount))
+        {
+         if(swingHighCount == 0)
+            lastSwingHigh = rates[p].high;
+         else if(swingHighCount == 1)
+           {
+            prevSwingHigh = rates[p].high;
+            break;
+           }
+         swingHighCount++;
+        }
+     }
+
+   for(int p = minPivotIdx; p <= maxPivotIdx; p++)
+     {
+      if(IsPivotLowAt(rates, p, pivotLen, pivotLen, evalBarIdx, barsCount))
+        {
+         if(swingLowCount == 0)
+            lastSwingLow = rates[p].low;
+         else if(swingLowCount == 1)
+           {
+            prevSwingLow = rates[p].low;
+            break;
+           }
+         swingLowCount++;
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Trend bias from MyAlert market-structure rule (struct 10/25)       |
+//| 1=BULLISH, -1=BEARISH, 0=NEUTRAL                                 |
+//+------------------------------------------------------------------+
+int CalcMyAlertTrendBias(const MqlRates &rates[],
+                         const int barIdx,
+                         const int barsCount)
+  {
+   double highestHighShort = CalcHighestHigh(rates, barIdx, barsCount, MYALERT_STRUCT_SHORT);
+   double highestHighLong  = CalcHighestHigh(rates, barIdx, barsCount, MYALERT_STRUCT_LONG);
+   double lowestLowShort   = CalcLowestLow(rates, barIdx, barsCount, MYALERT_STRUCT_SHORT);
+   double lowestLowLong    = CalcLowestLow(rates, barIdx, barsCount, MYALERT_STRUCT_LONG);
+
+   bool bullStructure = highestHighShort > highestHighLong && lowestLowShort > lowestLowLong;
+   bool bearStructure = lowestLowShort < lowestLowLong && highestHighShort < highestHighLong;
+
+   if(bullStructure)
+      return 1;
+   if(bearStructure)
+      return -1;
+   return 0;
+  }
+
+//+------------------------------------------------------------------+
+//| Simulate BOS + retest from oldest bar forward to evalBarIdx        |
+//| Breakout: 0=NONE, 1=BULL_CONFIRMED, 2=BEAR_CONFIRMED,            |
+//|           3=BULL_FAILED, 4=BEAR_FAILED                           |
+//| Retest:   0=NONE, 1=BULL_PENDING, 2=BULL_DONE,                   |
+//|           3=BEAR_PENDING, 4=BEAR_DONE                            |
+//+------------------------------------------------------------------+
+void CalcMyAlertBosRetestState(const MqlRates &rates[],
+                               const int evalBarIdx,
+                               const int barsCount,
+                               int &breakoutState,
+                               int &retestState)
+  {
+   breakoutState = 0;
+   retestState   = 0;
+
+   double lastConfirmedBosHigh     = 0.0;
+   double previousConfirmedBosHigh = 0.0;
+   double lastConfirmedBosLow      = 0.0;
+   double previousConfirmedBosLow  = 0.0;
+   double bullBosLevel             = 0.0;
+   double bearBosLevel             = 0.0;
+   int    bullBosLevelIdx          = -1;
+   int    bearBosLevelIdx          = -1;
+   double activeBullBreakLevel     = 0.0;
+   double activeBearBreakLevel     = 0.0;
+   int    activeBullBreakIdx       = -1;
+   int    activeBearBreakIdx       = -1;
+   bool   bullRetestPassed         = false;
+   bool   bearRetestPassed         = false;
+
+   double prevHighBreakout = 0.0;
+   double prevLowBreakout  = 0.0;
+   if(evalBarIdx + MYALERT_BREAKOUT_LOOKBACK + 1 < barsCount)
+     {
+      prevHighBreakout = CalcHighestHigh(rates, evalBarIdx + 1, barsCount, MYALERT_BREAKOUT_LOOKBACK);
+      prevLowBreakout  = CalcLowestLow(rates, evalBarIdx + 1, barsCount, MYALERT_BREAKOUT_LOOKBACK);
+     }
+
+   for(int i = barsCount - 1; i >= evalBarIdx; i--)
+     {
+      int pivotHighIdx = i + MYALERT_BOS_PIVOT_LEN;
+      if(pivotHighIdx < barsCount &&
+         IsPivotHighAt(rates, pivotHighIdx, MYALERT_BOS_PIVOT_LEN, MYALERT_BOS_PIVOT_LEN, i, barsCount))
+        {
+         double pivotHigh = rates[pivotHighIdx].high;
+         previousConfirmedBosHigh = lastConfirmedBosHigh;
+         lastConfirmedBosHigh = pivotHigh;
+         if(previousConfirmedBosHigh > 0.0 && pivotHigh < previousConfirmedBosHigh)
+           {
+            bullBosLevel = pivotHigh;
+            bullBosLevelIdx = pivotHighIdx;
+           }
+         else
+           {
+            bullBosLevel = 0.0;
+            bullBosLevelIdx = -1;
+           }
+        }
+
+      int pivotLowIdx = i + MYALERT_BOS_PIVOT_LEN;
+      if(pivotLowIdx < barsCount &&
+         IsPivotLowAt(rates, pivotLowIdx, MYALERT_BOS_PIVOT_LEN, MYALERT_BOS_PIVOT_LEN, i, barsCount))
+        {
+         double pivotLow = rates[pivotLowIdx].low;
+         previousConfirmedBosLow = lastConfirmedBosLow;
+         lastConfirmedBosLow = pivotLow;
+         if(previousConfirmedBosLow > 0.0 && pivotLow > previousConfirmedBosLow)
+           {
+            bearBosLevel = pivotLow;
+            bearBosLevelIdx = pivotLowIdx;
+           }
+         else
+           {
+            bearBosLevel = 0.0;
+            bearBosLevelIdx = -1;
+           }
+        }
+
+      bool bosBreakBuyNow  = false;
+      bool bosBreakSellNow = false;
+      if(bullBosLevel > 0.0 && bullBosLevelIdx >= 0 && i < bullBosLevelIdx)
+        {
+         double prevClose = (i + 1 < barsCount) ? rates[i + 1].close : rates[i].close;
+         if(rates[i].close > bullBosLevel && prevClose <= bullBosLevel)
+           {
+            bosBreakBuyNow = true;
+            activeBullBreakLevel = bullBosLevel;
+            activeBullBreakIdx = i;
+            bullRetestPassed = false;
+           }
+        }
+
+      if(bearBosLevel > 0.0 && bearBosLevelIdx >= 0 && i < bearBosLevelIdx)
+        {
+         double prevClose = (i + 1 < barsCount) ? rates[i + 1].close : rates[i].close;
+         if(rates[i].close < bearBosLevel && prevClose >= bearBosLevel)
+           {
+            bosBreakSellNow = true;
+            activeBearBreakLevel = bearBosLevel;
+            activeBearBreakIdx = i;
+            bearRetestPassed = false;
+           }
+        }
+
+      if(activeBullBreakIdx >= 0 && activeBullBreakLevel > 0.0)
+        {
+         int barsSinceBreak = activeBullBreakIdx - i;
+         if(barsSinceBreak > MYALERT_RETEST_WINDOW)
+           {
+            activeBullBreakLevel = 0.0;
+            activeBullBreakIdx = -1;
+            bullRetestPassed = false;
+           }
+         else if(i < activeBullBreakIdx &&
+                 rates[i].low <= activeBullBreakLevel &&
+                 rates[i].close >= activeBullBreakLevel)
+            bullRetestPassed = true;
+        }
+
+      if(activeBearBreakIdx >= 0 && activeBearBreakLevel > 0.0)
+        {
+         int barsSinceBreak = activeBearBreakIdx - i;
+         if(barsSinceBreak > MYALERT_RETEST_WINDOW)
+           {
+            activeBearBreakLevel = 0.0;
+            activeBearBreakIdx = -1;
+            bearRetestPassed = false;
+           }
+         else if(i < activeBearBreakIdx &&
+                 rates[i].high >= activeBearBreakLevel &&
+                 rates[i].close <= activeBearBreakLevel)
+            bearRetestPassed = true;
+        }
+
+      if(i == evalBarIdx)
+        {
+         if(bosBreakBuyNow)
+            breakoutState = 1;
+         else if(bosBreakSellNow)
+            breakoutState = 2;
+         else if(prevHighBreakout > 0.0 && rates[i].close <= prevHighBreakout)
+            breakoutState = 3;
+         else if(prevLowBreakout > 0.0 && rates[i].close >= prevLowBreakout)
+            breakoutState = 4;
+
+         if(activeBullBreakIdx >= 0)
+           {
+            if(bullRetestPassed)
+               retestState = 2;
+            else
+               retestState = 1;
+           }
+         else if(activeBearBreakIdx >= 0)
+           {
+            if(bearRetestPassed)
+               retestState = 4;
+            else
+               retestState = 3;
+           }
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Build Phase E market-structure fields (cols 45-53)                 |
+//+------------------------------------------------------------------+
+void CalcMyAlertMarketStructure(const MqlRates &rates[],
+                                const int barIdx,
+                                const int barsCount,
+                                MyAlertMarketStructure &structure)
+  {
+   structure.swingHigh      = 0.0;
+   structure.swingLow       = 0.0;
+   structure.hh             = 0;
+   structure.hl             = 0;
+   structure.lh             = 0;
+   structure.ll             = 0;
+   structure.trendBias      = 0;
+   structure.breakoutState  = 0;
+   structure.retestState    = 0;
+
+   if(barIdx + MYALERT_MIN_HISTORY_BARS >= barsCount)
+      return;
+
+   double prevSwingHigh = 0.0;
+   double prevSwingLow  = 0.0;
+   FindRecentSwingLevels(rates, barIdx, barsCount, MYALERT_SWING_PIVOT_LEN,
+                         structure.swingHigh, prevSwingHigh,
+                         structure.swingLow, prevSwingLow);
+
+   if(prevSwingHigh > 0.0 && structure.swingHigh > 0.0)
+     {
+      if(structure.swingHigh > prevSwingHigh)
+         structure.hh = 1;
+      else if(structure.swingHigh < prevSwingHigh)
+         structure.lh = 1;
+     }
+
+   if(prevSwingLow > 0.0 && structure.swingLow > 0.0)
+     {
+      if(structure.swingLow > prevSwingLow)
+         structure.hl = 1;
+      else if(structure.swingLow < prevSwingLow)
+         structure.ll = 1;
+     }
+
+   structure.trendBias = CalcMyAlertTrendBias(rates, barIdx, barsCount);
+   CalcMyAlertBosRetestState(rates, barIdx, barsCount,
+                             structure.breakoutState, structure.retestState);
+  }
+
+//+------------------------------------------------------------------+
+//| Format Phase E CSV segment (9 columns)                             |
+//+------------------------------------------------------------------+
+string FormatMyAlertPhaseEFeatures(const MyAlertMarketStructure &structure,
+                                   const int digits)
+  {
+   return StringFormat("%s,%s,%d,%d,%d,%d,%d,%d,%d",
+                       structure.swingHigh > 0.0 ? DoubleToString(structure.swingHigh, digits) : "0",
+                       structure.swingLow > 0.0 ? DoubleToString(structure.swingLow, digits) : "0",
+                       structure.hh,
+                       structure.hl,
+                       structure.lh,
+                       structure.ll,
+                       structure.trendBias,
+                       structure.breakoutState,
+                       structure.retestState);
+  }
+
+//+------------------------------------------------------------------+
+//| Repeat token N times (used for empty CSV placeholder fields)       |
+//+------------------------------------------------------------------+
+string StringRepeat(const string token, const int count)
+  {
+   string result = "";
+   for(int i = 0; i < count; i++)
+      result += token;
+   return result;
+  }
+
+//+------------------------------------------------------------------+
+//| Build Phase D+E feature CSV segment (cols 17-59)                   |
+//+------------------------------------------------------------------+
+string BuildMyAlertPhaseDFeatures(const MqlRates &rates[],
+                                  const int barIdx,
+                                  const int barsCount,
+                                  const int digits)
+  {
+   const int phaseDFieldCount = MYALERT_RESEARCH_COLUMNS - MYALERT_PHASE_C_COLUMNS;
+   if(barIdx + 20 >= barsCount)
+      return StringRepeat(",", phaseDFieldCount - 1);
+
+   const MqlRates bar      = rates[barIdx];
+   double body             = GetBarBodySize(bar);
+   double range            = GetBarRangeSize(bar);
+   double upperWick        = bar.high - MathMax(bar.close, bar.open);
+   double lowerWick        = MathMin(bar.close, bar.open) - bar.low;
+   double bodyRatio        = GetBarBodyRatio(bar);
+   double avgBody5         = CalcAverageBody(rates, barIdx, barsCount, 5);
+   double avgBody10        = CalcAverageBody(rates, barIdx, barsCount, 10);
+   double avgBody20        = CalcAverageBody(rates, barIdx, barsCount, 20);
+   double currentBodyRatio = SafeDiv(body, avgBody20);
+   double atr14            = CalcAtrSma(rates, barIdx, barsCount, MYALERT_ATR_PERIOD);
+   double rangeToAtr       = SafeDiv(range, atr14);
+
+   double prevBody  = (barIdx + 1 < barsCount) ? GetBarBodySize(rates[barIdx + 1]) : 0.0;
+   double prevRange = (barIdx + 1 < barsCount) ? GetBarRangeSize(rates[barIdx + 1]) : 0.0;
+   double bodyExpRatio   = CalcExpansionRatio(body, prevBody);
+   double rangeExpRatio  = CalcExpansionRatio(range, prevRange);
+
+   int bodyStrength = CalcMyAlertBodyStrengthCode(bar, atr14);
+   int followThrough = CalcFollowThrough(rates, barIdx, barsCount);
+   double distanceRatio = SafeDiv(body, atr14);
+   double prevBodyRatio = (barIdx + 1 < barsCount) ? GetBarBodyRatio(rates[barIdx + 1]) : 0.0;
+
+   string structureRelative = StringFormat("%d,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s",
+                                           GetBarDirectionSign(bar),
+                                           DoubleToString(body, digits),
+                                           DoubleToString(range, digits),
+                                           DoubleToString(upperWick, digits),
+                                           DoubleToString(lowerWick, digits),
+                                           DoubleToString(bodyRatio, digits + 2),
+                                           DoubleToString(SafeDiv(upperWick, range), digits + 2),
+                                           DoubleToString(SafeDiv(lowerWick, range), digits + 2),
+                                           DoubleToString(avgBody5, digits),
+                                           DoubleToString(avgBody10, digits),
+                                           DoubleToString(avgBody20, digits),
+                                           DoubleToString(currentBodyRatio, digits + 2),
+                                           DoubleToString(atr14, digits),
+                                           DoubleToString(rangeToAtr, digits + 2));
+
+   string sequence = StringFormat("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s",
+                                  IntegerToString(barIdx + 1 < barsCount ? GetBarDirectionSign(rates[barIdx + 1]) : 0),
+                                  IntegerToString(barIdx + 2 < barsCount ? GetBarDirectionSign(rates[barIdx + 2]) : 0),
+                                  IntegerToString(barIdx + 3 < barsCount ? GetBarDirectionSign(rates[barIdx + 3]) : 0),
+                                  IntegerToString(barIdx + 4 < barsCount ? GetBarDirectionSign(rates[barIdx + 4]) : 0),
+                                  IntegerToString(barIdx + 5 < barsCount ? GetBarDirectionSign(rates[barIdx + 5]) : 0),
+                                  DoubleToString(barIdx + 1 < barsCount ? GetBarBodyRatio(rates[barIdx + 1]) : 0.0, digits + 2),
+                                  DoubleToString(barIdx + 2 < barsCount ? GetBarBodyRatio(rates[barIdx + 2]) : 0.0, digits + 2),
+                                  DoubleToString(barIdx + 3 < barsCount ? GetBarBodyRatio(rates[barIdx + 3]) : 0.0, digits + 2),
+                                  DoubleToString(barIdx + 4 < barsCount ? GetBarBodyRatio(rates[barIdx + 4]) : 0.0, digits + 2),
+                                  DoubleToString(barIdx + 5 < barsCount ? GetBarBodyRatio(rates[barIdx + 5]) : 0.0, digits + 2),
+                                  IntegerToString(CountConsecutiveDirection(rates, barIdx, barsCount, 1)),
+                                  IntegerToString(CountConsecutiveDirection(rates, barIdx, barsCount, -1)),
+                                  DoubleToString(bodyExpRatio, digits + 2),
+                                  DoubleToString(rangeExpRatio, digits + 2));
+
+   string features = structureRelative + "," + sequence;
+
+   string myAlertRaw = StringFormat("%s,%s,%s,%d,%s,%d",
+                                    DoubleToString(prevBody, digits),
+                                    DoubleToString(avgBody20, digits),
+                                    DoubleToString(prevBodyRatio, digits + 2),
+                                    followThrough,
+                                    DoubleToString(distanceRatio, digits + 2),
+                                    bodyStrength);
+
+   MyAlertMarketStructure marketStructure;
+   CalcMyAlertMarketStructure(rates, barIdx, barsCount, marketStructure);
+   string phaseE = FormatMyAlertPhaseEFeatures(marketStructure, digits);
+
+   if(barIdx + MYALERT_MIN_HISTORY_BARS >= barsCount)
+      phaseE = ",,,,,,,,,";
+
+   return features + "," + phaseE + "," + myAlertRaw;
+  }
+
+//+------------------------------------------------------------------+
+//| Build full MyAlert row: Phase C + Phase D + Phase E                |
+//+------------------------------------------------------------------+
+string BuildMyAlertResearchRow(const string loopSymbol,
+                               const ENUM_TIMEFRAMES tf,
+                               const MqlRates &rates[],
+                               const int barIdx,
+                               const int barsCount)
+  {
+   const MqlRates bar = rates[barIdx];
+   datetime brokerTime = bar.time;
+   datetime utcTime    = BarTimeToUtc(brokerTime);
+
+   MqlDateTime utcDt;
+   TimeToStruct(utcTime, utcDt);
+
+   int    digits       = (int)SymbolInfoInteger(loopSymbol, SYMBOL_DIGITS);
+   int    spreadPoints = (int)SymbolInfoInteger(loopSymbol, SYMBOL_SPREAD);
+   string tfLabel      = TimeframeLabel(tf);
+
+   string row = StringFormat("%s,%s,%s,%s,%s,%s,%s,%s,%d,%s,%s,%s,%s,%I64d,%I64d,%d",
+                             FormatMyAlertTimestamp(brokerTime),
+                             FormatMyAlertTimestamp(utcTime),
+                             FormatMyAlertTimestamp(brokerTime),
+                             CsvEscape(loopSymbol),
+                             tfLabel,
+                             CsvEscape(ClassifyAssetClass(loopSymbol)),
+                             CsvEscape(ClassifySessionUtc(utcDt.hour)),
+                             CsvEscape(DayOfWeekLabel(utcDt.day_of_week)),
+                             utcDt.hour,
+                             DoubleToString(bar.open, digits),
+                             DoubleToString(bar.high, digits),
+                             DoubleToString(bar.low, digits),
+                             DoubleToString(bar.close, digits),
+                             bar.tick_volume,
+                             bar.real_volume,
+                             spreadPoints);
+
+   return row + "," + BuildMyAlertPhaseDFeatures(rates, barIdx, barsCount, digits);
+  }
+
+//+------------------------------------------------------------------+
+//| Append one MyAlert research row (Phase C + D + E)                  |
+//+------------------------------------------------------------------+
+bool AppendMyAlertResearchRow(const string loopSymbol,
+                              const ENUM_TIMEFRAMES tf,
+                              const MqlRates &rates[],
+                              const int barIdx,
+                              const int barsCount,
+                              const int streamIndex)
+  {
+   if(!EnableMyAlertResearchFeatures)
+      return false;
+
+   if(barIdx < 0 || barIdx >= barsCount)
+      return false;
+
+   datetime barTime = rates[barIdx].time;
+   if(barTime <= g_lastMyAlertWrittenBarTime[streamIndex])
+      return true;
+
+   string filename = BuildMyAlertResearchFileName(loopSymbol, tf);
+   string filePath = BuildMyAlertResearchFilePath(loopSymbol, tf);
+
+   bool isNewFile = !FileIsExist(filePath);
+   int handle = OpenFileWithRetry(filePath, FILE_READ | FILE_WRITE | FILE_ANSI,
+                                  "AppendMyAlertResearchRow");
+   if(handle == INVALID_HANDLE)
+     {
+      Print("BrokerDataCollector: MyAlert research write failed symbol=<", loopSymbol,
+            "> Filename=<", filename, ">");
+      return false;
+     }
+
+   if(isNewFile)
+      FileWriteString(handle, MYALERT_RESEARCH_HEADER + "\r\n");
+   else
+      FileSeek(handle, 0, SEEK_END);
+
+   FileWriteString(handle, BuildMyAlertResearchRow(loopSymbol, tf, rates, barIdx, barsCount) + "\r\n");
+   FileFlush(handle);
+   CloseTrackedFile(filePath, handle);
+
+   g_lastMyAlertWrittenBarTime[streamIndex] = barTime;
+   return true;
+  }
+
+//+------------------------------------------------------------------+
 //| Escape string for JSON output                                    |
 //+------------------------------------------------------------------+
 string JsonEscape(const string value)
@@ -1887,6 +2869,8 @@ void CollectManifestFilesFromDisk(ManifestFileEntry &files[])
    do
      {
       if(StringFind(filename, "summary_") == 0)
+         continue;
+      if(StringFind(filename, "MyAlert_") == 0)
          continue;
 
       string symbol = "";
