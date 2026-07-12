@@ -10,12 +10,15 @@ from typing import Any
 from myalert_enrich.ohlc import parse_timestamp
 from myalert_validate.models import VERDICT_FAIL, VERDICT_PASS, VERDICT_WARNING, CheckResult, ValidationConfig
 from myalert_validate.schema import (
+    CATEGORICAL_ENUMS,
     JOIN_KEYS,
+    LABEL_ENUMS,
     OUTCOME_COLUMNS,
     OUTCOME_LEAKAGE_COLUMNS,
     OUTCOME_NUMERIC_COLUMNS,
     RESEARCH_COLUMNS,
     RESEARCH_NUMERIC_COLUMNS,
+    TIMEFRAME_ALIGNMENT_RULES,
 )
 
 
@@ -505,4 +508,171 @@ def check_minimum_sample_size(
         },
         blockers=[f"Stream {s} has <{config.min_rows_per_stream} rows" for s in fail_streams[:5]],
         fixes=["Collect more data or lower min thresholds for experimentation"] if fail or warn else [],
+    )
+
+
+_DAY_NAMES = (
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+)
+
+
+def _session_from_utc_hour(hour: int) -> str:
+    if 13 <= hour < 17:
+        return "London-NY Overlap"
+    if 8 <= hour < 13:
+        return "London"
+    if 17 <= hour < 22:
+        return "New York"
+    if hour >= 22 or hour < 8:
+        return "Asia"
+    return "Off-hours"
+
+
+def _is_timeframe_aligned(ts: datetime, timeframe: str) -> bool:
+    rule = TIMEFRAME_ALIGNMENT_RULES.get(timeframe.upper())
+    if rule is None:
+        return True
+    minute_mod, second_required = rule
+    if ts.second != second_required:
+        return False
+    if minute_mod <= 1:
+        return True
+    return ts.minute % minute_mod == 0
+
+
+def check_duplicate_record_ids(rows: list[dict[str, str]], check_id: str) -> CheckResult:
+    seen: dict[str, int] = defaultdict(int)
+    for row in rows:
+        rid = row.get("Record ID", "").strip()
+        if rid:
+            seen[rid] += 1
+    dups = {k: v for k, v in seen.items() if v > 1}
+    verdict = VERDICT_FAIL if dups else VERDICT_PASS
+    return CheckResult(
+        check_id=check_id,
+        name="Duplicate Record IDs",
+        verdict=verdict,
+        score=_score_from_verdict(verdict),
+        summary=f"{len(dups)} duplicate Record IDs",
+        details={"duplicate_count": len(dups), "examples": list(dups.items())[:5]},
+        blockers=["Regenerate research CSV — Record ID must be unique per row"] if dups else [],
+    )
+
+
+def check_timeframe_alignment(rows: list[dict[str, str]], check_id: str) -> CheckResult:
+    misaligned = 0
+    samples: list[dict[str, str]] = []
+    for row in rows:
+        tf = row.get("Timeframe", "").strip()
+        ts_text = row.get("Timestamp", "").strip()
+        if not tf or not ts_text:
+            continue
+        try:
+            ts = parse_timestamp(ts_text)
+        except ValueError:
+            misaligned += 1
+            continue
+        if not _is_timeframe_aligned(ts, tf):
+            misaligned += 1
+            if len(samples) < 5:
+                samples.append({"Timestamp": ts_text, "Timeframe": tf})
+    verdict = VERDICT_FAIL if misaligned else VERDICT_PASS
+    return CheckResult(
+        check_id=check_id,
+        name="Timeframe boundary alignment",
+        verdict=verdict,
+        score=_score_from_verdict(verdict),
+        summary=f"{misaligned} misaligned timestamps",
+        details={"misaligned_count": misaligned, "samples": samples},
+        blockers=["Upgrade to EA v1.61+ for aligned candle open timestamps"] if misaligned else [],
+    )
+
+
+def check_timestamp_field_consistency(rows: list[dict[str, str]], check_id: str) -> CheckResult:
+    violations = 0
+    samples: list[dict[str, str]] = []
+    for row in rows:
+        try:
+            broker_ts = row.get("Timestamp", "").strip()
+            broker_label = row.get("Broker Timestamp", "").strip()
+            utc_ts = parse_timestamp(row["UTC Timestamp"])
+            hour_utc = int(row["Hour UTC"])
+            day_name = row.get("Day of Week", "").strip()
+            session = row.get("Session", "").strip()
+        except (KeyError, ValueError):
+            violations += 1
+            continue
+
+        if broker_ts != broker_label:
+            violations += 1
+            if len(samples) < 5:
+                samples.append({"issue": "broker_mismatch", "Timestamp": broker_ts, "Broker Timestamp": broker_label})
+            continue
+
+        if utc_ts.hour != hour_utc:
+            violations += 1
+            if len(samples) < 5:
+                samples.append({"issue": "hour_utc", "UTC Timestamp": row["UTC Timestamp"], "Hour UTC": row["Hour UTC"]})
+            continue
+
+        mql_dow = (utc_ts.weekday() + 1) % 7
+        expected_day = _DAY_NAMES[mql_dow]
+        if day_name != expected_day:
+            violations += 1
+            if len(samples) < 5:
+                samples.append({"issue": "day_of_week", "expected": expected_day, "actual": day_name})
+            continue
+
+        expected_session = _session_from_utc_hour(utc_ts.hour)
+        if session != expected_session:
+            violations += 1
+            if len(samples) < 5:
+                samples.append({"issue": "session", "expected": expected_session, "actual": session})
+    verdict = VERDICT_FAIL if violations else VERDICT_PASS
+    return CheckResult(
+        check_id=check_id,
+        name="Timestamp field consistency (broker/UTC/session)",
+        verdict=verdict,
+        score=_score_from_verdict(verdict),
+        summary=f"{violations} inconsistent timestamp-derived fields",
+        details={"violation_count": violations, "samples": samples},
+        fixes=["Use EA v1.61+ aligned broker open time for all timing columns"] if violations else [],
+    )
+
+
+def check_categorical_enums(rows: list[dict[str, str]], check_id: str) -> CheckResult:
+    invalid: dict[str, list[str]] = defaultdict(list)
+    for row in rows:
+        for col, allowed in CATEGORICAL_ENUMS.items():
+            text = str(row.get(col, "")).strip()
+            if text == "":
+                continue
+            if text not in allowed:
+                if len(invalid[col]) < 3:
+                    invalid[col].append(text)
+    label_invalid: dict[str, list[str]] = defaultdict(list)
+    for row in rows:
+        for col, allowed in LABEL_ENUMS.items():
+            text = str(row.get(col, "")).strip()
+            if text == "":
+                continue
+            if text not in allowed:
+                if len(label_invalid[col]) < 3:
+                    label_invalid[col].append(text)
+    total = sum(len(v) for v in invalid.values()) + sum(len(v) for v in label_invalid.values())
+    verdict = VERDICT_FAIL if total else VERDICT_PASS
+    return CheckResult(
+        check_id=check_id,
+        name="Categorical code and label enums",
+        verdict=verdict,
+        score=_score_from_verdict(verdict),
+        summary=f"{total} invalid enum values",
+        details={"invalid_numeric": dict(invalid), "invalid_labels": dict(label_invalid)},
+        blockers=["Fix categorical values to match docs/MYALERT_CATEGORICAL_CODES.md"] if total else [],
     )

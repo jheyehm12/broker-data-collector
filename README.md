@@ -127,17 +127,37 @@ MyAlert_<SYMBOL>_<TIMEFRAME>_Research.csv
 
 Example (broker symbol `BTCUSD#`): `MyAlert_BTCUSD_M1_Research.csv`
 
-**Phase E (current):** all 59 columns populated when sufficient history exists. Phase D requires 20 bars of lookback; Phase E requires 36 bars.
+**Phase E (current):** all 59 core columns populated when sufficient history exists; v1.61+ appends **9 extension columns** (Record ID + readable labels) for **68 total**. Phase D requires 20 bars of lookback; Phase E requires 36 bars.
 
-### Timezone conversion
+Categorical code reference: [`docs/MYALERT_CATEGORICAL_CODES.md`](docs/MYALERT_CATEGORICAL_CODES.md)
+
+### Timezone conversion and alignment (v1.61+)
+
+All timing columns describe the **same closed-candle broker open instant**, aligned to exact timeframe boundaries before formatting.
+
+| Step | Operation |
+|------|-----------|
+| 1 | Read `bar.time` from `CopyRates` (closed bar, shift = 1) |
+| 2 | **Align** to timeframe period: floor to period start; if within 1 second of next boundary, snap up (fixes `19:41:59` → `19:42:00` on M1) |
+| 3 | `Timestamp` and `Broker Timestamp` = aligned broker open, formatted `YYYY.MM.DD HH:MM:SS` |
+| 4 | `UTC Timestamp` = aligned broker open − `(TimeCurrent() - TimeGMT())` sampled at write time |
+| 5 | `Hour UTC`, `Day of Week`, `Session` = derived from aligned `UTC Timestamp` struct |
+
+**Broker → UTC formula:**
+
+```
+UTC Timestamp = AlignBarOpen(bar.time, timeframe) - (TimeCurrent() - TimeGMT())
+```
 
 | Column | Source |
 |--------|--------|
-| `Timestamp` | Closed bar open time from `CopyRates` (`bar.time`), formatted |
-| `Broker Timestamp` | Same as `Timestamp` — explicit broker/trade-server time label |
-| `UTC Timestamp` | `bar.time - (TimeCurrent() - TimeGMT())` at write time |
-| `Hour UTC` | Hour component (0–23) of `UTC Timestamp` |
-| `Day of Week` | English name from UTC struct (`Sunday`–`Saturday`) |
+| `Timestamp` | Aligned closed-candle **broker** open time |
+| `Broker Timestamp` | Same value as `Timestamp` (explicit broker label) |
+| `UTC Timestamp` | Aligned broker open converted to UTC |
+| `Hour UTC` | Hour (0–23) from `UTC Timestamp` |
+| `Day of Week` | English name from UTC (`Sunday`–`Saturday`) |
+| `Session` | UTC hour bucket (see table below) |
+| `Record ID` | `SYMBOL_TF_YYYYMMDDHHMMSS` from aligned broker open (sanitized symbol) |
 
 **Note:** UTC offset is sampled at write time. Historical DST shifts are not replayed per bar.
 
@@ -304,22 +324,30 @@ Within **6** bars after a BOS break:
 
 Backfill copies `BackfillBars + 80` closed bars; only `BackfillBars` rows are written.
 
-### Exact header (59 columns)
+### Exact header (68 columns — v1.61+)
+
+Core columns 1–59 are unchanged in name and order. Extension columns 60–68 are appended:
 
 ```
-Timestamp,UTC Timestamp,Broker Timestamp,Symbol,Timeframe,Asset Class,Session,Day of Week,Hour UTC,Open,High,Low,Close,Tick Volume,Real Volume,Spread,Direction,Body Size,Range Size,Upper Wick,Lower Wick,Body-to-Range Ratio,Upper Wick Ratio,Lower Wick Ratio,Average Body 5,Average Body 10,Average Body 20,Current Body Ratio,ATR14,Range-to-ATR,Previous Direction 1,Previous Direction 2,Previous Direction 3,Previous Direction 4,Previous Direction 5,Previous Body Ratio 1,Previous Body Ratio 2,Previous Body Ratio 3,Previous Body Ratio 4,Previous Body Ratio 5,Consecutive Bullish,Consecutive Bearish,Body Expansion,Range Expansion,Swing High,Swing Low,HH,HL,LH,LL,Trend Bias,Breakout State,Retest State,Previous Body,Average Body,Previous Body Ratio,Follow Through,Distance Ratio,Body Strength
+Timestamp,UTC Timestamp,Broker Timestamp,Symbol,Timeframe,Asset Class,Session,Day of Week,Hour UTC,Open,High,Low,Close,Tick Volume,Real Volume,Spread,Direction,Body Size,Range Size,Upper Wick,Lower Wick,Body-to-Range Ratio,Upper Wick Ratio,Lower Wick Ratio,Average Body 5,Average Body 10,Average Body 20,Current Body Ratio,ATR14,Range-to-ATR,Previous Direction 1,Previous Direction 2,Previous Direction 3,Previous Direction 4,Previous Direction 5,Previous Body Ratio 1,Previous Body Ratio 2,Previous Body Ratio 3,Previous Body Ratio 4,Previous Body Ratio 5,Consecutive Bullish,Consecutive Bearish,Body Expansion,Range Expansion,Swing High,Swing Low,HH,HL,LH,LL,Trend Bias,Breakout State,Retest State,Previous Body,Average Body,Previous Body Ratio,Follow Through,Distance Ratio,Body Strength,Record ID,Direction Label,Body Expansion Label,Range Expansion Label,Trend Bias Label,Breakout State Label,Retest State Label,Follow Through Label,Body Strength Label
 ```
 
-**Sample row (Phase E complete, EURUSD# M1 — illustrative):**
+**Sample row 1 — Phase E complete, BTCUSD M1 (aligned timestamps + extension):**
 
 ```
-2026.07.13 10:15:00,2026.07.13 02:15:00,2026.07.13 10:15:00,EURUSD#,M1,Forex,London,Monday,2,1.08510,1.08545,1.08500,1.08530,128,0,12,1,0.00020,0.00045,0.00015,0.00010,0.44,0.33,0.22,0.00018,0.00019,0.00020,1.00,0.00032,1.41,1,1,1,0,-1,0.40,0.38,0.35,0.30,0.25,3,0,1.11,1.05,1.08545,1.08470,1,1,0,0,1,0,1,0.00018,0.00020,0.40,1,0.63,2
+2026.07.10 19:42:00,2026.07.10 16:42:00,2026.07.10 19:42:00,BTCUSD#,M1,Crypto,New York,Friday,16,43250.10,43285.40,43240.00,43270.80,412,0,120,1,20.70,45.40,14.60,10.10,0.46,0.32,0.22,18.50,19.20,20.10,1.03,28.40,1.60,1,1,-1,1,0,0.44,0.40,0.38,0.35,0.30,2,0,1.12,1.08,43290.00,43180.00,1,1,0,0,1,1,2,18.20,20.10,0.42,1,0.73,2,BTCUSD_M1_20260710194200,Bullish,Expansion,Expansion,BULLISH,BULL_CONFIRMED,BULL_DONE,Yes,STRONG
 ```
 
-**Sample row (insufficient history — first ~20 bars):**
+**Sample row 2 — EURUSD# M1 (illustrative):**
 
 ```
-2026.07.13 09:55:00,2026.07.13 01:55:00,2026.07.13 09:55:00,EURUSD#,M1,Forex,Asia,Monday,1,1.08480,1.08495,1.08470,1.08488,95,0,11,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+2026.07.13 10:15:00,2026.07.13 02:15:00,2026.07.13 10:15:00,EURUSD#,M1,Forex,London,Monday,2,1.08510,1.08545,1.08500,1.08530,128,0,12,1,0.00020,0.00045,0.00015,0.00010,0.44,0.33,0.22,0.00018,0.00019,0.00020,1.00,0.00032,1.41,1,1,1,0,-1,0.40,0.38,0.35,0.30,0.25,3,0,1.11,1.05,1.08545,1.08470,1,1,0,0,1,0,1,0.00018,0.00020,0.40,1,0.63,2,EURUSD_M1_20260713101500,Bullish,Expansion,Expansion,BULLISH,NONE,NONE,Yes,STRONG
+```
+
+**Sample row 3 — insufficient history (first ~20 bars; Record ID still present):**
+
+```
+2026.07.13 09:55:00,2026.07.13 01:55:00,2026.07.13 09:55:00,EURUSD#,M1,Forex,Asia,Monday,1,1.08480,1.08495,1.08470,1.08488,95,0,11,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,EURUSD_M1_20260713095500,,,,,,,,
 ```
 
 ### Duplicate and alignment validation
@@ -328,11 +356,17 @@ Timestamp,UTC Timestamp,Broker Timestamp,Symbol,Timeframe,Asset Class,Session,Da
 |-------|-----------|
 | Closed candles only | `CopyRates(..., shift=1)` — same as main Raw/CompetitionLab export |
 | No future leakage | All lookback reads `barIdx+1` and older; ATR/body averages use current + past bars only |
-| Duplicate timestamps | `g_lastMyAlertWrittenBarTime[stream]` skips rows with `barTime <= lastWritten`; resume reads last timestamp from file on init/backfill |
-| Alignment with main CSV | `Timestamp` column should match the `timestamp` column in the daily Raw CSV for the same symbol/timeframe/bar (compare after a collection run) |
+| Timeframe alignment | `AlignBarOpenTimeToTimeframe()` floors/snaps broker open to period boundary (M1 → `:00` seconds) |
+| Timestamp consistency | `Timestamp` = `Broker Timestamp`; `Hour UTC` / `Day of Week` / `Session` derived from aligned `UTC Timestamp` |
+| Unique Record ID | `SYMBOL_TF_YYYYMMDDHHMMSS` from aligned broker open; duplicate guard in EA + `myalert_validate` |
+| Duplicate keys | `g_lastMyAlertWrittenBarTime[stream]` skips rows with aligned `barTime <= lastWritten`; resume reads last timestamp from file on init/backfill |
+| Alignment with main CSV | Aligned `Timestamp` should match the `timestamp` column in the daily Raw CSV for the same symbol/timeframe/bar |
 | Missing candles | If the broker has gaps, both exports skip those bars; MyAlert rows exist only for bars actually written |
+| Python validation | `myalert_validate` checks schema (68 cols), duplicate Record IDs, timeframe alignment, categorical enums |
 
 **Regression:** when `EnableMyAlertResearchFeatures = false`, no MyAlert folder I/O, no extra `CopyRates`, and Raw/CompetitionLab behavior is unchanged.
+
+**Upgrade note:** v1.61 changes the MyAlert header (59 → 68 columns). Delete or archive pre-v1.61 research CSVs before VPS deployment; resume logic still reads timestamps from legacy 59-column files but new rows require the new header.
 
 ### Performance impact (MyAlert research)
 
@@ -486,7 +520,11 @@ Exit code `0` = PASS/WARNING, `2` = FAIL.
 | Required columns | PASS / FAIL |
 | Data types (numeric parseable) | PASS / FAIL |
 | Duplicate keys (`Symbol+Timeframe+Timestamp`) | PASS / FAIL |
+| Duplicate Record IDs | PASS / FAIL |
 | Timestamp chronological order | PASS / WARNING |
+| Timeframe boundary alignment | PASS / FAIL |
+| Timestamp field consistency (broker/UTC/session) | PASS / FAIL |
+| Categorical code and label enums | PASS / FAIL |
 | Missing values | PASS / WARNING / FAIL |
 | Infinite/invalid numerics | PASS / FAIL |
 | Feature leakage (outcome cols in research) | PASS / FAIL |
@@ -800,4 +838,4 @@ For personal research and backtesting. Verify compliance with your broker's term
 
 ## Version
 
-See [CHANGELOG.md](CHANGELOG.md) — current release **1.8.0** (EA **1.60** + Phase F/G tools).
+See [CHANGELOG.md](CHANGELOG.md) — current release **1.8.1** (EA **1.61** + Phase F/G tools).

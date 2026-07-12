@@ -62,7 +62,66 @@ RESEARCH_COLUMNS: list[str] = [
     "Follow Through",
     "Distance Ratio",
     "Body Strength",
+    "Record ID",
+    "Direction Label",
+    "Body Expansion Label",
+    "Range Expansion Label",
+    "Trend Bias Label",
+    "Breakout State Label",
+    "Retest State Label",
+    "Follow Through Label",
+    "Body Strength Label",
 ]
+
+EXTENSION_COLUMNS: list[str] = RESEARCH_COLUMNS[59:]
+
+CATEGORICAL_ENUMS: dict[str, set[str]] = {
+    "Direction": {"-1", "0", "1"},
+    "Trend Bias": {"-1", "0", "1"},
+    "Breakout State": {"0", "1", "2", "3", "4"},
+    "Retest State": {"0", "1", "2", "3", "4"},
+    "Follow Through": {"0", "1"},
+    "Body Strength": {"0", "1", "2"},
+    "HH": {"0", "1"},
+    "HL": {"0", "1"},
+    "LH": {"0", "1"},
+    "LL": {"0", "1"},
+}
+
+LABEL_ENUMS: dict[str, set[str]] = {
+    "Direction Label": {"Bullish", "Bearish", "Doji"},
+    "Body Expansion Label": {"Expansion", "Contraction", "Neutral"},
+    "Range Expansion Label": {"Expansion", "Contraction", "Neutral"},
+    "Trend Bias Label": {"BULLISH", "BEARISH", "NEUTRAL"},
+    "Breakout State Label": {"NONE", "BULL_CONFIRMED", "BEAR_CONFIRMED", "BULL_FAILED", "BEAR_FAILED"},
+    "Retest State Label": {"NONE", "BULL_PENDING", "BULL_DONE", "BEAR_PENDING", "BEAR_DONE"},
+    "Follow Through Label": {"Yes", "No"},
+    "Body Strength Label": {"STRONG", "NEUTRAL", "WEAK"},
+}
+
+TIMEFRAME_ALIGNMENT_RULES: dict[str, tuple[int, int]] = {
+    "M1": (1, 0),
+    "M2": (2, 0),
+    "M3": (3, 0),
+    "M4": (4, 0),
+    "M5": (5, 0),
+    "M6": (6, 0),
+    "M10": (10, 0),
+    "M12": (12, 0),
+    "M15": (15, 0),
+    "M20": (20, 0),
+    "M30": (30, 0),
+    "H1": (60, 0),
+    "H2": (120, 0),
+    "H3": (180, 0),
+    "H4": (240, 0),
+    "H6": (360, 0),
+    "H8": (480, 0),
+    "H12": (720, 0),
+    "D1": (0, 0),
+    "W1": (0, 0),
+    "MN1": (0, 0),
+}
 
 OUTCOME_COLUMNS: list[str] = [
     "Symbol",
@@ -191,6 +250,7 @@ RESEARCH_IDENTITY_COLUMNS = [
     "Asset Class",
     "Session",
     "Day of Week",
+    "Record ID",
 ]
 
 RECOMMENDED_FEATURE_COLUMNS = [

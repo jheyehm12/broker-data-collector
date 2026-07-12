@@ -1,6 +1,6 @@
 [project]
 name = "broker-data-collector-tools"
-version = "1.8.0"
+version = "1.8.1"
 description = "Post-processing tools for Broker Data Collector MyAlert research"
 requires-python = ">=3.10"
 

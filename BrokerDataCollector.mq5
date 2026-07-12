@@ -4,14 +4,16 @@
 //|                     Research / backtesting only — does NOT trade |
 //+------------------------------------------------------------------+
 #property copyright "Broker Data Collector"
-#property version   "1.60"
+#property version   "1.61"
 #property description "Collects broker-specific market data to CSV. No trading."
 
 #define OUTPUT_FOLDER           "BrokerDataCollector"
 #define COMPETITION_LAB_FOLDER  "BrokerDataCollector\\CompetitionLab"
 #define MYALERT_FOLDER          "BrokerDataCollector\\MyAlert"
-#define MYALERT_RESEARCH_HEADER "Timestamp,UTC Timestamp,Broker Timestamp,Symbol,Timeframe,Asset Class,Session,Day of Week,Hour UTC,Open,High,Low,Close,Tick Volume,Real Volume,Spread,Direction,Body Size,Range Size,Upper Wick,Lower Wick,Body-to-Range Ratio,Upper Wick Ratio,Lower Wick Ratio,Average Body 5,Average Body 10,Average Body 20,Current Body Ratio,ATR14,Range-to-ATR,Previous Direction 1,Previous Direction 2,Previous Direction 3,Previous Direction 4,Previous Direction 5,Previous Body Ratio 1,Previous Body Ratio 2,Previous Body Ratio 3,Previous Body Ratio 4,Previous Body Ratio 5,Consecutive Bullish,Consecutive Bearish,Body Expansion,Range Expansion,Swing High,Swing Low,HH,HL,LH,LL,Trend Bias,Breakout State,Retest State,Previous Body,Average Body,Previous Body Ratio,Follow Through,Distance Ratio,Body Strength"
-#define MYALERT_RESEARCH_COLUMNS 59
+#define MYALERT_RESEARCH_HEADER "Timestamp,UTC Timestamp,Broker Timestamp,Symbol,Timeframe,Asset Class,Session,Day of Week,Hour UTC,Open,High,Low,Close,Tick Volume,Real Volume,Spread,Direction,Body Size,Range Size,Upper Wick,Lower Wick,Body-to-Range Ratio,Upper Wick Ratio,Lower Wick Ratio,Average Body 5,Average Body 10,Average Body 20,Current Body Ratio,ATR14,Range-to-ATR,Previous Direction 1,Previous Direction 2,Previous Direction 3,Previous Direction 4,Previous Direction 5,Previous Body Ratio 1,Previous Body Ratio 2,Previous Body Ratio 3,Previous Body Ratio 4,Previous Body Ratio 5,Consecutive Bullish,Consecutive Bearish,Body Expansion,Range Expansion,Swing High,Swing Low,HH,HL,LH,LL,Trend Bias,Breakout State,Retest State,Previous Body,Average Body,Previous Body Ratio,Follow Through,Distance Ratio,Body Strength,Record ID,Direction Label,Body Expansion Label,Range Expansion Label,Trend Bias Label,Breakout State Label,Retest State Label,Follow Through Label,Body Strength Label"
+#define MYALERT_CORE_COLUMNS     59
+#define MYALERT_EXTENSION_COLUMNS 9
+#define MYALERT_RESEARCH_COLUMNS (MYALERT_CORE_COLUMNS + MYALERT_EXTENSION_COLUMNS)
 #define MYALERT_PHASE_C_COLUMNS  16
 #define MYALERT_LOOKBACK_BARS    80
 #define MYALERT_ATR_PERIOD       14
@@ -1853,6 +1855,120 @@ int GetServerToUtcOffsetSeconds()
   }
 
 //+------------------------------------------------------------------+
+//| Align broker bar open time to exact timeframe boundary             |
+//| Floors to period start; snaps up if within 1s of next boundary   |
+//+------------------------------------------------------------------+
+datetime AlignBarOpenTimeToTimeframe(const datetime barTime, const ENUM_TIMEFRAMES tf)
+  {
+   int periodSec = PeriodSeconds(tf);
+   if(periodSec <= 0)
+      return barTime;
+
+   long t = (long)barTime;
+   long remainder = t % periodSec;
+   if(remainder == 0)
+      return barTime;
+   if(remainder >= periodSec - 1)
+      return (datetime)(t - remainder + periodSec);
+   return (datetime)(t - remainder);
+  }
+
+//+------------------------------------------------------------------+
+//| Symbol token for Record ID (sanitized, no trailing underscores)    |
+//+------------------------------------------------------------------+
+string SymbolForRecordId(const string symbol)
+  {
+   string token = SanitizeSymbolForFilename(symbol);
+   while(StringLen(token) > 0 && StringSubstr(token, StringLen(token) - 1, 1) == "_")
+      token = StringSubstr(token, 0, StringLen(token) - 1);
+   return token;
+  }
+
+//+------------------------------------------------------------------+
+//| Deterministic Record ID: SYMBOL_TIMEFRAME_YYYYMMDDHHMMSS           |
+//+------------------------------------------------------------------+
+string BuildMyAlertRecordId(const string symbol,
+                            const ENUM_TIMEFRAMES tf,
+                            const datetime alignedBrokerOpen)
+  {
+   MqlDateTime dt;
+   TimeToStruct(alignedBrokerOpen, dt);
+   return StringFormat("%s_%s_%04d%02d%02d%02d%02d%02d",
+                       SymbolForRecordId(symbol),
+                       TimeframeLabel(tf),
+                       dt.year, dt.mon, dt.day, dt.hour, dt.min, dt.sec);
+  }
+
+//+------------------------------------------------------------------+
+//| Readable labels for appended extension columns                     |
+//+------------------------------------------------------------------+
+string LabelDirection(const int directionSign)
+  {
+   if(directionSign > 0)
+      return "Bullish";
+   if(directionSign < 0)
+      return "Bearish";
+   return "Doji";
+  }
+
+string LabelExpansionRatio(const double ratio)
+  {
+   if(ratio > 1.0)
+      return "Expansion";
+   if(ratio < 1.0)
+      return "Contraction";
+   return "Neutral";
+  }
+
+string LabelTrendBias(const int trendBias)
+  {
+   if(trendBias > 0)
+      return "BULLISH";
+   if(trendBias < 0)
+      return "BEARISH";
+   return "NEUTRAL";
+  }
+
+string LabelBreakoutState(const int breakoutState)
+  {
+   switch(breakoutState)
+     {
+      case 1: return "BULL_CONFIRMED";
+      case 2: return "BEAR_CONFIRMED";
+      case 3: return "BULL_FAILED";
+      case 4: return "BEAR_FAILED";
+     }
+   return "NONE";
+  }
+
+string LabelRetestState(const int retestState)
+  {
+   switch(retestState)
+     {
+      case 1: return "BULL_PENDING";
+      case 2: return "BULL_DONE";
+      case 3: return "BEAR_PENDING";
+      case 4: return "BEAR_DONE";
+     }
+   return "NONE";
+  }
+
+string LabelFollowThrough(const int followThrough)
+  {
+   return (followThrough == 1) ? "Yes" : "No";
+  }
+
+string LabelBodyStrength(const int bodyStrength)
+  {
+   switch(bodyStrength)
+     {
+      case 2: return "STRONG";
+      case 1: return "NEUTRAL";
+     }
+   return "WEAK";
+  }
+
+//+------------------------------------------------------------------+
 //| Convert broker bar open time to UTC using current server offset    |
 //+------------------------------------------------------------------+
 datetime BarTimeToUtc(const datetime barTime)
@@ -2523,6 +2639,48 @@ string FormatMyAlertPhaseEFeatures(const MyAlertMarketStructure &structure,
   }
 
 //+------------------------------------------------------------------+
+//| Build extension CSV segment: Record ID + readable labels           |
+//+------------------------------------------------------------------+
+string BuildMyAlertExtensionColumns(const string loopSymbol,
+                                    const ENUM_TIMEFRAMES tf,
+                                    const MqlRates &rates[],
+                                    const int barIdx,
+                                    const int barsCount,
+                                    const datetime alignedBrokerOpen)
+  {
+   string recordId = BuildMyAlertRecordId(loopSymbol, tf, alignedBrokerOpen);
+
+   if(barIdx + 20 >= barsCount)
+      return recordId + ",,,,,,,,";
+
+   const MqlRates bar = rates[barIdx];
+   int directionSign = GetBarDirectionSign(bar);
+   double body = GetBarBodySize(bar);
+   double range = GetBarRangeSize(bar);
+   double prevBody = (barIdx + 1 < barsCount) ? GetBarBodySize(rates[barIdx + 1]) : 0.0;
+   double prevRange = (barIdx + 1 < barsCount) ? GetBarRangeSize(rates[barIdx + 1]) : 0.0;
+   double bodyExpRatio = CalcExpansionRatio(body, prevBody);
+   double rangeExpRatio = CalcExpansionRatio(range, prevRange);
+   double atr14 = CalcAtrSma(rates, barIdx, barsCount, MYALERT_ATR_PERIOD);
+   int bodyStrength = CalcMyAlertBodyStrengthCode(bar, atr14);
+   int followThrough = CalcFollowThrough(rates, barIdx, barsCount);
+
+   MyAlertMarketStructure marketStructure;
+   CalcMyAlertMarketStructure(rates, barIdx, barsCount, marketStructure);
+
+   return StringFormat("%s,%s,%s,%s,%s,%s,%s,%s,%s",
+                       recordId,
+                       CsvEscape(LabelDirection(directionSign)),
+                       CsvEscape(LabelExpansionRatio(bodyExpRatio)),
+                       CsvEscape(LabelExpansionRatio(rangeExpRatio)),
+                       CsvEscape(LabelTrendBias(marketStructure.trendBias)),
+                       CsvEscape(LabelBreakoutState(marketStructure.breakoutState)),
+                       CsvEscape(LabelRetestState(marketStructure.retestState)),
+                       CsvEscape(LabelFollowThrough(followThrough)),
+                       CsvEscape(LabelBodyStrength(bodyStrength)));
+  }
+
+//+------------------------------------------------------------------+
 //| Repeat token N times (used for empty CSV placeholder fields)       |
 //+------------------------------------------------------------------+
 string StringRepeat(const string token, const int count)
@@ -2541,7 +2699,7 @@ string BuildMyAlertPhaseDFeatures(const MqlRates &rates[],
                                   const int barsCount,
                                   const int digits)
   {
-   const int phaseDFieldCount = MYALERT_RESEARCH_COLUMNS - MYALERT_PHASE_C_COLUMNS;
+   const int phaseDFieldCount = MYALERT_CORE_COLUMNS - MYALERT_PHASE_C_COLUMNS;
    if(barIdx + 20 >= barsCount)
       return StringRepeat(",", phaseDFieldCount - 1);
 
@@ -2630,7 +2788,7 @@ string BuildMyAlertResearchRow(const string loopSymbol,
                                const int barsCount)
   {
    const MqlRates bar = rates[barIdx];
-   datetime brokerTime = bar.time;
+   datetime brokerTime = AlignBarOpenTimeToTimeframe(bar.time, tf);
    datetime utcTime    = BarTimeToUtc(brokerTime);
 
    MqlDateTime utcDt;
@@ -2658,7 +2816,8 @@ string BuildMyAlertResearchRow(const string loopSymbol,
                              bar.real_volume,
                              spreadPoints);
 
-   return row + "," + BuildMyAlertPhaseDFeatures(rates, barIdx, barsCount, digits);
+   string extension = BuildMyAlertExtensionColumns(loopSymbol, tf, rates, barIdx, barsCount, brokerTime);
+   return row + "," + BuildMyAlertPhaseDFeatures(rates, barIdx, barsCount, digits) + "," + extension;
   }
 
 //+------------------------------------------------------------------+
@@ -2677,7 +2836,7 @@ bool AppendMyAlertResearchRow(const string loopSymbol,
    if(barIdx < 0 || barIdx >= barsCount)
       return false;
 
-   datetime barTime = rates[barIdx].time;
+   datetime barTime = AlignBarOpenTimeToTimeframe(rates[barIdx].time, tf);
    if(barTime <= g_lastMyAlertWrittenBarTime[streamIndex])
       return true;
 

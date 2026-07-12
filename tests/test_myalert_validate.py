@@ -17,16 +17,25 @@ from myalert_validate.validator import run_validation
 
 def _minimal_research_row(base: datetime, i: int) -> dict[str, str]:
     row = {col: "0" for col in RESEARCH_COLUMNS}
-    ts = format_timestamp(base + timedelta(minutes=i))
-    row["Timestamp"] = ts
-    row["UTC Timestamp"] = ts
-    row["Broker Timestamp"] = ts
+    broker_ts = base + timedelta(minutes=i)
+    utc_ts = broker_ts - timedelta(hours=8)
+    broker_text = format_timestamp(broker_ts)
+    utc_text = format_timestamp(utc_ts)
+    row["Timestamp"] = broker_text
+    row["UTC Timestamp"] = utc_text
+    row["Broker Timestamp"] = broker_text
     row["Symbol"] = "EURUSD#"
     row["Timeframe"] = "M1"
     row["Asset Class"] = "Forex"
-    row["Session"] = "London"
-    row["Day of Week"] = "Monday"
-    row["Hour UTC"] = "2"
+    row["Session"] = "Asia" if utc_ts.hour < 8 or utc_ts.hour >= 22 else "London"
+    if 8 <= utc_ts.hour < 13:
+        row["Session"] = "London"
+    elif 13 <= utc_ts.hour < 17:
+        row["Session"] = "London-NY Overlap"
+    elif 17 <= utc_ts.hour < 22:
+        row["Session"] = "New York"
+    row["Day of Week"] = utc_ts.strftime("%A")
+    row["Hour UTC"] = str(utc_ts.hour)
     row["Open"] = "1.08500"
     row["High"] = "1.08540"
     row["Low"] = "1.08490"
@@ -70,6 +79,16 @@ def _minimal_research_row(base: datetime, i: int) -> dict[str, str]:
     row["Follow Through"] = "1"
     row["Distance Ratio"] = "0.62"
     row["Body Strength"] = "2"
+    compact_ts = broker_ts.strftime("%Y%m%d%H%M%S")
+    row["Record ID"] = f"EURUSD_M1_{compact_ts}"
+    row["Direction Label"] = "Bullish"
+    row["Body Expansion Label"] = "Expansion"
+    row["Range Expansion Label"] = "Expansion"
+    row["Trend Bias Label"] = "BULLISH"
+    row["Breakout State Label"] = "NONE"
+    row["Retest State Label"] = "NONE"
+    row["Follow Through Label"] = "Yes"
+    row["Body Strength Label"] = "STRONG"
     return row
 
 
@@ -174,6 +193,21 @@ class ValidationTests(unittest.TestCase):
             report = run_validation(research_path, None, root / "Validation", ValidationConfig())
             leak = next(c for c in report.checks if c.check_id == "feature_leakage")
             self.assertEqual(leak.verdict, VERDICT_FAIL)
+
+
+    def test_duplicate_record_ids_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            research_path = root / "dup_rid.csv"
+            row = _minimal_research_row(datetime(2026, 7, 13, 10, 0, 0), 0)
+            dup = dict(row)
+            dup["Timestamp"] = "2026.07.13 10:01:00"
+            dup["UTC Timestamp"] = "2026.07.13 02:01:00"
+            dup["Broker Timestamp"] = "2026.07.13 10:01:00"
+            _write_csv(research_path, RESEARCH_COLUMNS, [row, dup])
+            report = run_validation(research_path, None, root / "Validation", ValidationConfig())
+            rid = next(c for c in report.checks if c.check_id == "duplicate_record_ids")
+            self.assertEqual(rid.verdict, VERDICT_FAIL)
 
 
 if __name__ == "__main__":

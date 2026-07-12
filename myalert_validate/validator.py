@@ -6,10 +6,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from myalert_validate.checks import (
+    check_categorical_enums,
     check_class_balance,
     check_correlation,
     check_data_types,
     check_duplicate_keys,
+    check_duplicate_record_ids,
     check_feature_leakage,
     check_feature_variance,
     check_incomplete_outcomes,
@@ -21,7 +23,9 @@ from myalert_validate.checks import (
     check_schema,
     check_split_readiness,
     check_symbol_timeframe_consistency,
+    check_timestamp_field_consistency,
     check_timestamp_order,
+    check_timeframe_alignment,
     check_timezone_consistency,
 )
 from myalert_validate.eligibility import build_eligibility_rows, write_eligibility_csv
@@ -71,7 +75,11 @@ def run_validation(
         check_required_columns(research_cols, list(JOIN_KEYS) + ["Close", "Direction", "ATR14"], "required_columns"),
         check_data_types(research_rows, RESEARCH_NUMERIC_COLUMNS, "research_data_types"),
         check_duplicate_keys(research_rows, "duplicate_keys"),
+        check_duplicate_record_ids(research_rows, "duplicate_record_ids"),
         check_timestamp_order(research_rows, "timestamp_order"),
+        check_timeframe_alignment(research_rows, "timeframe_alignment"),
+        check_timestamp_field_consistency(research_rows, "timestamp_consistency"),
+        check_categorical_enums(research_rows, "categorical_enums"),
         check_missing_values(research_rows, RESEARCH_COLUMNS, cfg, "missing_values"),
         check_invalid_numerics(research_rows, RESEARCH_NUMERIC_COLUMNS, "invalid_numerics"),
         check_feature_leakage(research_cols, "feature_leakage"),

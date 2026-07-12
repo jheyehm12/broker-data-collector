@@ -4,6 +4,39 @@ All notable changes to Broker Data Collector are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.8.1] - 2026-07-13
+
+### Added (MyAlert research CSV hardening — validator)
+
+- Extended `RESEARCH_COLUMNS` to 68 (Record ID + 8 readable labels)
+- New validation checks: duplicate Record IDs, timeframe boundary alignment, timestamp field consistency, categorical enum verification
+- `docs/MYALERT_CATEGORICAL_CODES.md` — authoritative code/label mappings
+- Unit tests: `tests/test_myalert_validate.py` (5 tests)
+
+### Changed
+
+- Python tools version → `1.8.1`
+- `myalert_validate` expects v1.61+ research CSV header
+
+## [1.61] - 2026-07-13
+
+### Added (MyAlert research CSV hardening — EA)
+
+- **Record ID** (col 60): `SYMBOL_TIMEFRAME_YYYYMMDDHHMMSS` from aligned broker candle open
+- **Readable labels** (cols 61–68): Direction, expansion, trend, breakout, retest, follow-through, body strength
+- `AlignBarOpenTimeToTimeframe()` — snaps broker bar open to exact timeframe boundaries
+- `docs/MYALERT_CATEGORICAL_CODES.md` referenced from README
+
+### Fixed
+
+- Timestamp alignment: `Timestamp`, `Broker Timestamp`, `UTC Timestamp`, `Hour UTC`, `Session`, `Day of Week` all derived from the same aligned closed-candle open (fixes M1 `19:41:59` → `19:42:00` drift)
+
+### Safety
+
+- Core 59 columns unchanged in name and order; extension append-only
+- Raw/CompetitionLab exports unchanged when `EnableMyAlertResearchFeatures = false`
+- Legacy 59-column header still recognized for resume timestamp reads
+
 ## [1.8.0] - 2026-07-13
 
 ### Added (MyAlert Phase G — ML readiness validator)
